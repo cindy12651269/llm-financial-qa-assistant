@@ -1,41 +1,42 @@
-# RAG (Retrieval-augmented generation) ChatBot
+# RAG (Retrieval-Augmented Generation) ChatBot for Financial Knowledge
 
 [![CI](https://github.com/umbertogriffo/rag-chatbot/workflows/CI/badge.svg)](https://github.com/umbertogriffo/rag-chatbot/actions/workflows/ci.yaml)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 [![Code style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-> [!IMPORTANT]
-> Disclaimer:
-> The code has been tested on:
->   * `Ubuntu 22.04.2 LTS` running on a Lenovo Legion 5 Pro with twenty `12th Gen Intel® Core™ i7-12700H` and
-      an `NVIDIA GeForce RTX 3060`.
->   * `MacOS Sonoma 14.3.1` running on a MacBook Pro M1 (2020).
->
-> If you are using another Operating System or different hardware, and you can't load the models, please
-> take a look at the official Llama Cpp Python's
-> GitHub [issue](https://github.com/abetlen/llama-cpp-python/issues).
+## Project Background and Credit
 
-> [!WARNING]
-> - `lama_cpp_pyhon` doesn't use `GPU` on `M1` if you are running an `x86` version of `Python`. More
-    info [here](https://github.com/abetlen/llama-cpp-python/issues/756#issuecomment-1870324323).
-> - It's important to note that the large language model sometimes generates hallucinations or false information.
+This project is adapted from the open-source repository [umbertogriffo/rag-chatbot](https://github.com/umbertogriffo/rag-chatbot), which provides a robust foundation for building local RAG (Retrieval-Augmented Generation) applications using Llama.cpp, Chroma, and Streamlit.
+
+While the core architecture, setup, and environment configuration are preserved, this fork has been modified to support a specialized use case: **context-aware financial knowledge Q&A**. Key enhancements include:
+
+- Integration of domain-specific datasets in finance, trading, and investment.
+- Interface and prompt tuning to improve accuracy for financial terminology.
+- Clearer structure for showcasing multi-turn dialogue in a finance context.
+
+This project aims to serve as a practical example for applying RAG to vertical domains, particularly financial education, glossary lookup, and investment strategy explanation.
+
+> All setup instructions and technical content below are inherited from the original repository and have been reworded where necessary for clarity and continuity.
 
 ## Table of contents
 
-- [Introduction](#introduction)
-- [Prerequisites](#prerequisites)
-    - [Install Poetry](#install-poetry)
-- [Bootstrap Environment](#bootstrap-environment)
-    - [How to use the make file](#how-to-use-the-make-file)
-- [Using the Open-Source Models Locally](#using-the-open-source-models-locally)
-    - [Supported Models](#supported-models)
-- [Supported Response Synthesis strategies](#supported-response-synthesis-strategies)
-- [Example Data](#example-data)
-- [Build the memory index](#build-the-memory-index)
-- [Run the Chatbot](#run-the-chatbot)
-- [Run the RAG Chatbot](#run-the-rag-chatbot)
-- [How to debug the Streamlit app on Pycharm](#how-to-debug-the-streamlit-app-on-pycharm)
-- [References](#references)
+* [Introduction](#introduction)
+* [Prerequisites](#prerequisites)
+
+  * [Install Poetry](#install-poetry)
+* [Bootstrap Environment](#bootstrap-environment)
+
+  * [How to use the make file](#how-to-use-the-make-file)
+* [Using the Open-Source Models Locally](#using-the-open-source-models-locally)
+
+  * [Supported Models](#supported-models)
+* [Supported Response Synthesis strategies](#supported-response-synthesis-strategies)
+* [Example Data](#example-data)
+* [Build the memory index](#build-the-memory-index)
+* [Run the Chatbot](#run-the-chatbot)
+* [Run the RAG Chatbot](#run-the-rag-chatbot)
+* [How to debug the Streamlit app on Pycharm](#how-to-debug-the-streamlit-app-on-pycharm)
+* [References](#references)
 
 ## Introduction
 
