@@ -1,9 +1,10 @@
 [tool.poetry]
-name = "chat"
+name = "llm-financial-qa-assistant"
 version = "0.4.0"
 description = "RAG ChatBot"
 authors = ["Umberto Griffo <umberto.griffo@gmail.com>"]
 readme = "README.md"
+packages = [{ include = "chatbot" }]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.11"
