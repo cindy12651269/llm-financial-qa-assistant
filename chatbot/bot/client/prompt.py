@@ -1,122 +1,119 @@
-# A string template for the system message.
-# This template is used to define the behavior and characteristics of the assistant.
-SYSTEM_TEMPLATE = """You are a helpful, respectful and honest assistant.
+# Financial-specific system and QA prompt templates for RAG Chatbot
+# Corresponds to: All Stories in demo.md (finance-themed chatbot assistant)
+
+# Used in: All Stories (acts as the chatbot's persona)
+SYSTEM_TEMPLATE = """You are a knowledgeable and trustworthy financial assistant.
+You explain investment concepts, trading terminology, and valuation logic in a clear and concise way.
 """
 
-# A string template for the system message when the assistant can call functions.
-# This template is used to define the behavior and characteristics of the assistant
-# with the capability to call functions with appropriate input when necessary.
-TOOL_SYSTEM_TEMPLATE = """You are a helpful, respectful and honest assistant.
-You can call functions with appropriate input when necessary.
+# Used in: Future expansion with tools (e.g., financial calculator, external APIs)
+TOOL_SYSTEM_TEMPLATE = """You are a knowledgeable and trustworthy financial assistant.
+You can call tools or functions with the correct input when needed.
+You explain financial concepts clearly and cite known terminology.
 """
 
-# A string template with placeholders for question.
-QA_PROMPT_TEMPLATE = """Answer the question below:
+# Used in: Single-turn questions (e.g., "What is a bid-ask spread?")
+# Corresponds to: demo.md > Story 1 - Trading Terminology Primer
+QA_PROMPT_TEMPLATE = """Please answer the following finance-related question:
 {question}
 """
 
-# A string template with placeholders for question, and context.
-CTX_PROMPT_TEMPLATE = """Context information is below.
+# Used in: Contextual QA (e.g., "Given this explanation, what is liquidity?")
+# Corresponds to: Story 2 - Investment Strategy Concepts, Story 3 - Card Value Estimation
+CTX_PROMPT_TEMPLATE = """Relevant information is provided below.
 ---------------------
 {context}
 ---------------------
-Given the context information and not prior knowledge, answer the question below:
+Given the context above and not prior knowledge, please answer this finance-related question:
 {question}
 """
 
-# A string template with placeholders for question, existing_answer, and context.
-REFINED_CTX_PROMPT_TEMPLATE = """The original query is as follows: {question}
-We have provided an existing answer: {existing_answer}
-We have the opportunity to refine the existing answer
-(only if needed) with some more context below.
+# Used in: Refinement of answers after additional document chunk retrieved
+# Corresponds to: Story 4 - Time-Series & Backtesting (e.g., "Remind me of pitfalls...")
+REFINED_CTX_PROMPT_TEMPLATE = """Original Question: {question}
+Existing Answer: {existing_answer}
+You may improve the answer using the additional context below.
 ---------------------
 {context}
 ---------------------
-Given the new context, refine the original answer to better answer the query.
-If the context isn't useful, return the original answer.
+If helpful, refine the existing answer. Otherwise, return the original answer.
 Refined Answer:
 """
 
-# A string template with placeholders for question, and chat_history to refine the question based on the chat history.
-REFINED_QUESTION_CONVERSATION_AWARENESS_PROMPT_TEMPLATE = """Chat History:
+# Used in: Multi-turn conversations (e.g., "What about liquidity?" → rephrase)
+# Corresponds to: Rag Chatbot > Story - 1
+REFINED_QUESTION_CONVERSATION_AWARENESS_PROMPT_TEMPLATE = """Previous Chat History:
 ---------------------
 {chat_history}
 ---------------------
-Follow Up Question: {question}
-Given the above conversation and a follow up question, rephrase the follow up question to be a standalone question.
-Standalone question:
+Follow-up Question: {question}
+Rephrase the question above into a standalone financial query.
+Standalone Question:
 """
 
-# A string template with placeholders for question, and chat_history to answer the question based on the chat history.
+# Used in: Multi-turn chat (e.g., continuing discussion on Sharpe Ratio or Alpha)
+# Corresponds to: Rag Chatbot > Story - 1, and any follow-up in multi-turn flows
 REFINED_ANSWER_CONVERSATION_AWARENESS_PROMPT_TEMPLATE = """
-You are engaging in a conversation with a human participant who is unaware that they might be
-interacting with a machine.
-Your goal is to respond in a way that convincingly simulates human-like intelligence and behavior.
-The conversation should be natural, coherent, and contextually relevant.
+You are simulating a professional investment advisor.
+Your responses should demonstrate domain knowledge in trading, quantitative finance, and investment strategies.
 Chat History:
 ---------------------
 {chat_history}
 ---------------------
-Follow Up Question: {question}\n
-Given the context provided in the Chat History and the follow up question, please answer the follow up question above.
-If the follow up question isn't correlated to the context provided in the Chat History, please just answer the follow up
-question, ignoring the context provided in the Chat History.
-Please also don't reformulate the follow up question, and write just a concise answer.
+Follow-up Question: {question}
+Using the above conversation context, answer the question clearly and accurately.
+If context is irrelevant, just answer directly.
+Avoid rephrasing the question; give a concise, helpful answer.
 """
-
 
 def generate_qa_prompt(template: str, system: str, question: str) -> str:
     """
-    Generates a prompt for a question-answer task.
+    Generates a prompt for a financial question-answer task.
 
     Args:
-        template (str): A string template with placeholders for system, question.
-        system (str): The name or identifier of the system related to the question.
-        question (str): The question to be included in the prompt.
+        template (str): A string template with placeholders for system and question.
+        system (str): The name or identifier of the financial assistant system.
+        question (str): The financial or trading-related question to be included in the prompt.
 
     Returns:
-        str: The generated prompt.
+        str: The generated QA prompt string.
     """
-
     prompt = template.format(system=system, question=question)
     return prompt
 
 
 def generate_ctx_prompt(template: str, system: str, question: str, context: str = "") -> str:
     """
-    Generates a prompt for a context-aware question-answer task.
+    Generates a prompt for a context-aware financial QA task.
 
     Args:
         template (str): A string template with placeholders for system, question, and context.
-        system (str): The name or identifier of the system related to the question.
-        question (str): The question to be included in the prompt.
-        context (str, optional): Additional context information. Defaults to "".
+        system (str): The name or identifier of the financial assistant system.
+        question (str): The financial or investing-related question.
+        context (str, optional): Additional relevant context from documents. Defaults to "".
 
     Returns:
-        str: The generated prompt.
+        str: The generated prompt with context included.
     """
-
     prompt = template.format(system=system, context=context, question=question)
     return prompt
-
 
 def generate_refined_ctx_prompt(
     template: str, system: str, question: str, existing_answer: str, context: str = ""
 ) -> str:
     """
-    Generates a prompt for a refined context-aware question-answer task.
+    Generates a refined prompt for improving an existing financial answer with new context.
 
     Args:
         template (str): A string template with placeholders for system, question, existing_answer, and context.
-        system (str): The name or identifier of the system related to the question.
-        question (str): The question to be included in the prompt.
-        existing_answer (str): The existing answer associated with the question.
-        context (str, optional): Additional context information. Defaults to "".
+        system (str): The name or identifier of the financial assistant system.
+        question (str): The original finance-related question.
+        existing_answer (str): The current answer to potentially improve.
+        context (str, optional): Newly retrieved context information. Defaults to "".
 
     Returns:
-        str: The generated prompt.
+        str: The updated prompt for refining the answer.
     """
-
     prompt = template.format(
         system=system,
         context=context,
@@ -128,18 +125,17 @@ def generate_refined_ctx_prompt(
 
 def generate_conversation_awareness_prompt(template: str, system: str, question: str, chat_history: str) -> str:
     """
-    Generates a prompt for a conversation-awareness task.
+    Generates a conversation-aware prompt for financial multi-turn QA.
 
     Args:
         template (str): A string template with placeholders for system, question, and chat_history.
-        system (str): The name or identifier of the system related to the question.
-        question (str): The question to be included in the prompt.
-        chat_history (str): The chat history associated with the conversation.
+        system (str): The name or identifier of the financial assistant system.
+        question (str): The follow-up financial question to answer.
+        chat_history (str): The preceding conversation context.
 
     Returns:
-        str: The generated prompt.
+        str: The generated prompt tailored to conversational context.
     """
-
     prompt = template.format(
         system=system,
         chat_history=chat_history,

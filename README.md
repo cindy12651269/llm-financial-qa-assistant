@@ -10,13 +10,14 @@ This project is adapted from the open-source repository [umbertogriffo/rag-chatb
 
 While the core architecture, setup, and environment configuration are preserved, this fork has been modified to support a specialized use case: **context-aware financial knowledge Q&A**. Key enhancements include:
 
-- Integration of domain-specific datasets in finance, trading, and investment.
-- Interface and prompt tuning to improve accuracy for financial terminology.
-- Clearer structure for showcasing multi-turn dialogue in a finance context.
+* Integration of domain-specific datasets in finance, trading, and investment.
+* Interface and prompt tuning to improve accuracy for financial terminology.
+* Clearer structure for showcasing multi-turn dialogue in a finance context.
 
 This project aims to serve as a practical example for applying RAG to vertical domains, particularly financial education, glossary lookup, and investment strategy explanation.
 
 > All setup instructions and technical content below are inherited from the original repository and have been reworded where necessary for clarity and continuity.
+
 
 ## Table of contents
 
@@ -60,7 +61,7 @@ based on the context provided by those files.
 The `Memory Builder` component of the project loads Markdown pages from the `docs` folder.
 It then divides these pages into smaller sections, calculates the embeddings (a numerical representation) of these
 sections with the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
-`sentence-transformer`, and saves them in an embedding database called [Chroma](https://github.com/chroma-core/chroma)
+`sentence-transformers`, and saves them in an embedding database called [Chroma](https://github.com/chroma-core/chroma)
 for later use.
 
 When a user asks a question, the RAG ChatBot retrieves the most relevant sections from the Embedding database.
@@ -138,21 +139,16 @@ Additionally, we use the `Quantization and 4-bit precision` to reduce number of 
 The quantized models are stored in [GGML/GGUF](https://medium.com/@phillipgimmi/what-is-gguf-and-ggml-e364834d241c)
 format.
 
-### Supported Models
+## Supported Open-Source Models
 
-| 🤖 Model                                                       | Supported | Model Size | Max Context Window | Notes and link to the model card                                                                                                                                     |
-|----------------------------------------------------------------|-----------|------------|--------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `llama-3.2` Meta Llama 3.2 Instruct                            | ✅         | 1B         | 128k               | Optimized to run locally on a mobile or edge device - [Card](https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF)                                            |
-| `llama-3.2` Meta Llama 3.2 Instruct                            | ✅         | 3B         | 128k               | Optimized to run locally on a mobile or edge device - [Card](https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF)                                            |
-| `llama-3.1` Meta Llama 3.1 Instruct                            | ✅         | 8B         | 128k               | **Recommended model** [Card](https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF)                                                                       |
-| `qwen-2.5:3b` - Qwen2.5 Instruct                               | ✅         | 3B         | 128k               | [Card](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF)                                                                                                         |
-| `qwen-2.5:3b-math-reasoning` - Qwen2.5 Instruct Math Reasoning | ✅         | 3B         | 128k               | [Card](https://huggingface.co/ugriffo/Qwen2.5-3B-Instruct-Math-Reasoning-GGUF)                                                                                       |
-| `deep-seek-r1:7b` - DeepSeek R1 Distill Qwen 7B                | ✅         | 7B         | 128k               | **Experimental** [Card](https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF)                                                                           |
-| `openchat-3.6` - OpenChat 3.6                                  | ✅         | 8B         | 8192               | [Card](https://huggingface.co/bartowski/openchat-3.6-8b-20240522-GGUF)                                                                                               |
-| `openchat-3.5` - OpenChat 3.5                                  | ✅         | 7B         | 8192               | [Card](https://huggingface.co/TheBloke/openchat-3.5-0106-GGUF)                                                                                                       |
-| `starling` Starling Beta                                       | ✅         | 7B         | 8192               | Is trained from `Openchat-3.5-0106`. It's recommended if you prefer more verbosity over OpenChat - [Card](https://huggingface.co/bartowski/Starling-LM-7B-beta-GGUF) |
-| `phi-3.5` Phi-3.5 Mini  Instruct                               | ✅         | 3.8B       | 128k               | [Card](https://huggingface.co/MaziyarPanahi/Phi-3.5-mini-instruct-GGUF)                                                                                              |
-| `stablelm-zephyr` StableLM Zephyr OpenOrca                     | ✅         | 3B         | 4096               | [Card](https://huggingface.co/TheBloke/stablelm-zephyr-3b-GGUF)                                                                                                      |
+| 🤖 Model (`--model`) | Supported | Model Size | Max Context | Notes and Link to Model Card                                                                 |
+| -------------------- | --------- | ---------- | ----------- | -------------------------------------------------------------------------------------------- |
+| `llama-3.2`          | ✅         | 3B         | 128k        | [Llama 3.2 - 3B](https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF)                |
+| `openchat-3.6`       | ✅         | 8B         | 8192        | [OpenChat 3.6 - 8B](https://huggingface.co/bartowski/openchat-3.6-8b-20240522-GGUF)          |
+| `starling`           | ✅         | 7B         | 8192        | [Starling LM 7B beta](https://huggingface.co/bartowski/Starling-LM-7B-beta-GGUF)             |
+| `phi-3.5`            | ✅         | 3.8B       | 128k        | [Phi-3.5 Mini Instruct](https://huggingface.co/MaziyarPanahi/Phi-3.5-mini-instruct-GGUF)     |
+| `qwen-2.5:3b`        | ✅         | 3B         | 128k        | [Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF)                  |
+| `qwen-2.5:coder`     | ✅         | 3B         | 128k        | [Qwen2.5-Coder-3B-Instruct](https://huggingface.co/bartowski/Qwen2.5-Coder-3B-Instruct-GGUF) |
 
 ## Supported Response Synthesis strategies
 
@@ -178,21 +174,23 @@ python chatbot/memory_builder.py --chunk-size 1000 --chunk-overlap 50
 
 ## Run the Chatbot
 
-To interact with a GUI type:
+To interact with a GUI for conversation-only mode, use the following command and replace `<model>` with one of the options below:
 
-```shell
-streamlit run chatbot/chatbot_app.py -- --model llama-3.1 --max-new-tokens 1024
+```bash
+streamlit run chatbot/chatbot_app.py -- --model <model> --max-new-tokens 1024
 ```
 
 ![conversation-aware-chatbot.gif](images/conversation-aware-chatbot.gif)
 
 ## Run the RAG Chatbot
 
-To interact with a GUI type:
+To interact with a GUI with document-based RAG capabilities, use:
 
-```shell
-streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.1 --k 2 --synthesis-strategy async-tree-summarization
+```bash
+streamlit run chatbot/rag_chatbot_app.py -- --model <model> --k 2 --synthesis-strategy async-tree-summarization
 ```
+
+Replace `<model>` with one of the supported model names.
 
 ![rag_chatbot_example.gif](images%2Frag_chatbot_example.gif)
 
@@ -285,3 +283,4 @@ streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.1 --k 2 --synthesis-
     * [AnythingLLM](https://useanything.com/)
     * [FastServe - Serve Llama-cpp with FastAPI](https://github.com/aniketmaurya/fastserve)
     * [Alpaca](https://github.com/Jeffser/Alpaca?tab=readme-ov-file)
+
