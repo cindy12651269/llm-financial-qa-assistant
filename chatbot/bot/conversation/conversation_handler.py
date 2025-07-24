@@ -13,22 +13,20 @@ logger = get_logger(__name__)
 
 def refine_question(llm: LamaCppClient, question: str, chat_history: ChatHistory, max_new_tokens: int = 128) -> str:
     """
-    Refines the given question based on the chat history.
+    Rephrase the user's financial question to make it clearer, using chat history context.
 
     Args:
-        llm (LlmClient): The language model client for conversation-related tasks.
-        question (str): The original question.
-        chat_history (List[Tuple[str, str]]): A list to store the conversation
-        history as tuples of questions and answers.
-        max_new_tokens (int, optional): The maximum number of tokens to generate in the answer.
-            Defaults to 128.
+        llm (LamaCppClient): The LLM client customized for finance.
+        question (str): The original user query.
+        chat_history (ChatHistory): The conversation history.
+        max_new_tokens (int): Max length for the generated refined question.
 
     Returns:
-        str: The refined question.
+        str: The improved, standalone financial question.
     """
 
     if chat_history:
-        logger.info("--- Refining the question based on the chat history... ---")
+        logger.info("--- Refining financial question using chat history ---")
 
         conversation_awareness_prompt = llm.generate_refined_question_conversation_awareness_prompt(
             question, str(chat_history)
@@ -47,29 +45,19 @@ def refine_question(llm: LamaCppClient, question: str, chat_history: ChatHistory
 
 def answer(llm: LamaCppClient, question: str, chat_history: ChatHistory, max_new_tokens: int = 512) -> Any:
     """
-    Generates an answer to the given question based on the chat history or a direct prompt.
+    Stream a financial domain-specific answer, optionally using prior chat history.
 
     Args:
-        llm (LlmClient): The language model client for conversation-related tasks.
-        question (str): The input question for which an answer is generated.
-        chat_history (List[Tuple[str, str]]): A list to store the conversation
-        history as tuples of questions and answers.
-        max_new_tokens (int, optional): The maximum number of tokens to generate in the answer.
-            Defaults to 512.
+        llm (LamaCppClient): The finance-tuned LLM client.
+        question (str): The user query.
+        chat_history (ChatHistory): Conversation memory.
+        max_new_tokens (int): Output token limit.
 
     Returns:
-        A streaming iterator (Any) for progressively generating the answer.
-
-    Notes:
-        The method checks if there is existing chat history. If chat history is available,
-        it constructs a conversation-awareness prompt using the question and chat history.
-        The answer is then generated using the LLM with the conversation-awareness prompt.
-        If no chat history is available, a prompt is generated directly from the input question,
-        and the answer is generated accordingly.
+        Any: Token stream for displaying response progressively.
     """
-
     if chat_history:
-        logger.info("--- Answer the question based on the chat history... ---")
+        logger.info("--- Generating financial answer with chat history ---")
 
         conversation_awareness_prompt = llm.generate_refined_answer_conversation_awareness_prompt(
             question, str(chat_history)
@@ -96,20 +84,18 @@ def answer_with_context(
     max_new_tokens: int = 512,
 ):
     """
-    Generates an answer to the given question using a context synthesis strategy and retrieved contents.
-    If the content is not provided generates an answer based on the chat history or a direct prompt.
+    Generate a financial answer using retrieved context (RAG) and question history.
 
     Args:
-        llm (LlmClient): The language model client for conversation-related tasks.
-        ctx_synthesis_strategy (BaseSynthesisStrategy): The strategy to use for context synthesis.
-        question (str): The input question for which an answer is generated.
-        chat_history (List[Tuple[str, str]]): A list to store the conversation
-        history as tuples of questions and answers.
-        retrieved_contents (list[Document]): A list of documents retrieved for context.
-        max_new_tokens (int, optional): The maximum number of tokens to generate in the answer. Defaults to 512.
+        llm (LamaCppClient): The finance-aware LLM client.
+        ctx_synthesis_strategy (BaseSynthesisStrategy): Context summarization strategy.
+        question (str): User's financial question.
+        chat_history (ChatHistory): Past interactions.
+        retrieved_contents (list[Document]): Relevant documents to enhance accuracy.
+        max_new_tokens (int): Token generation limit.
 
     Returns:
-        tuple: A tuple containing the answer streamer and formatted prompts.
+        tuple: (streamer, list of formatted prompt strings used).
     """
     if not retrieved_contents:
         return answer(llm, question, chat_history, max_new_tokens=max_new_tokens), []
