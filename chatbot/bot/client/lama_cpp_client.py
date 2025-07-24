@@ -3,10 +3,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import requests
-from helpers.log import experimental
-from llama_cpp import CreateCompletionResponse, CreateCompletionStreamResponse, Llama
 from tqdm import tqdm
+from llama_cpp import CreateCompletionResponse, CreateCompletionStreamResponse, Llama
 
+from helpers.log import experimental
 from bot.client.prompt import (
     CTX_PROMPT_TEMPLATE,
     QA_PROMPT_TEMPLATE,
@@ -25,7 +25,7 @@ from bot.model.base_model import ModelSettings
 
 class LamaCppClient:
     """
-    Class for implementing language model client.
+    Language model client using llama-cpp with financial assistant personality.
     """
 
     def __init__(self, model_folder: Path, model_settings: ModelSettings):
@@ -34,23 +34,18 @@ class LamaCppClient:
         self.model_path = self.model_folder / self.model_settings.file_name
 
         self._auto_download()
-
         self.llm = self._load_llm()
-        # self.tokenizer = self._load_tokenizer()
 
     def _load_llm(self) -> Any:
-        """
-        Method to load the language model.
-        """
-        llm = Llama(model_path=str(self.model_path), **self.model_settings.config)
-        return llm
+        """Load the local GGUF LLM model."""
+        return Llama(model_path=str(self.model_path), **self.model_settings.config)
 
     def _load_tokenizer(self) -> Any:
         """
         Method to load the tokenizer.
         """
         raise NotImplementedError
-
+    
     def _auto_download(self) -> None:
         """
         Downloads a model file based on the provided name and saves it to the specified path.
@@ -90,16 +85,8 @@ class LamaCppClient:
 
     def generate_answer(self, prompt: str, max_new_tokens: int = 512) -> str:
         """
-        Generates an answer based on the given prompt using the language model.
-
-        Args:
-            prompt (str): The input prompt for generating the answer.
-            max_new_tokens (int): The maximum number of new tokens to generate (default is 512).
-
-        Returns:
-            str: The generated answer.
+        Generates an answer using ChatML format with a financial assistant system prompt.
         """
-
         output = self.llm.create_chat_completion(
             messages=[
                 {"role": "system", "content": SYSTEM_TEMPLATE},
@@ -108,21 +95,11 @@ class LamaCppClient:
             max_tokens=max_new_tokens,
             **self.model_settings.config_answer,
         )
-
-        answer = output["choices"][0]["message"].get("content", "")
-
-        return answer
+        return output["choices"][0]["message"].get("content", "")
 
     async def async_generate_answer(self, prompt: str, max_new_tokens: int = 512) -> str:
         """
-        Generates an answer based on the given prompt using the language model.
-
-        Args:
-            prompt (str): The input prompt for generating the answer.
-            max_new_tokens (int): The maximum number of new tokens to generate (default is 512).
-
-        Returns:
-            str: The generated answer.
+        Async version of generate_answer (ChatML mode).
         """
         output = self.llm.create_chat_completion(
             messages=[
@@ -132,10 +109,7 @@ class LamaCppClient:
             max_tokens=max_new_tokens,
             **self.model_settings.config_answer,
         )
-
-        answer = output["choices"][0]["message"].get("content", "")
-
-        return answer
+        return output["choices"][0]["message"].get("content", "")
 
     def stream_answer(self, prompt: str, max_new_tokens: int = 512) -> str:
         """
@@ -210,7 +184,7 @@ class LamaCppClient:
         self, prompt: str, max_new_tokens: int = 512, tools: list[dict] = None, tool_choice: str = None
     ) -> list[dict] | None:
         """
-        Retrieves tools based on the given prompt using the language model.
+        Calls a tool based on user prompt (e.g., financial calculator).
 
         Args:
             prompt (str): The input prompt for retrieving tools.
@@ -234,7 +208,6 @@ class LamaCppClient:
             tool_choice=tool_choice,
             **self.model_settings.config_answer,
         )
-
         tool_calls = output["choices"][0]["message"].get("tool_calls", None)
         # first_choice_function = output["choices"][0]['message'].get('function_call', None)
         # if first_choice_function:
@@ -242,6 +215,37 @@ class LamaCppClient:
         #     function_args = first_choice_function.get('arguments', None)
         return tool_calls
 
+    def generate_completion(self, prompt: str, max_new_tokens: int = 512) -> str:
+        """
+        Generates a raw prompt completion without ChatML structure.
+        Useful for simpler local models.
+        """
+        full_prompt = f"{SYSTEM_TEMPLATE}\n\n{prompt}"
+        output = self.llm(
+            full_prompt,
+            max_tokens=max_new_tokens,
+            **self.model_settings.config,
+        )
+        return output["choices"][0]["text"]
+
+    def stream_completion(self, prompt: str, max_new_tokens: int = 512) -> str:
+        """
+        Streams raw completion token-by-token (non-chat format).
+        """
+        full_prompt = f"{SYSTEM_TEMPLATE}\n\n{prompt}"
+        completion = ""
+        for output in self.llm(
+            full_prompt,
+            max_tokens=max_new_tokens,
+            stream=True,
+            **self.model_settings.config,
+        ):
+            token = output["choices"][0]["text"]
+            completion += token
+            print(token, end="", flush=True)
+        return completion 
+
+    
     @staticmethod
     def parse_token(token):
         return token["choices"][0]["delta"].get("content", "")
