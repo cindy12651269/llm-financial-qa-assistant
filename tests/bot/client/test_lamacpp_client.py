@@ -2,8 +2,8 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
-from bot.client.lama_cpp_client import LamaCppClient
-from bot.model.model_registry import Model, get_model_settings
+from chatbot.bot.client.lama_cpp_client import LamaCppClient
+from chatbot.bot.model.model_registry import Model, get_model_settings
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def cpu_config():
 
 @pytest.fixture
 def model_settings():
-    model_setting = get_model_settings(Model.LLAMA_3_2_one.value)
+    model_setting = get_model_settings(Model.LLAMA_3_2_3B.value)
     return model_setting
 
 

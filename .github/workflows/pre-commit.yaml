@@ -1,26 +1,27 @@
-name: Lint and format
+name: Lint and format # Workflow name shown in GitHub Actions UI
 
-on: [pull_request]
+on: [pull_request] # Trigger only on pull request events (e.g., open, sync, rebase)
 
 jobs:
-  run-linters:
-    name: Run linters
-    runs-on: ubuntu-latest
+  run-linters: # Job name
+    name: Run linters # Display name in GitHub Actions UI
+    runs-on: ubuntu-latest # Use the latest stable Ubuntu runner
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4 # Check out the code from the PR
       with:
-        ref: ${{ github.event.pull_request.head.ref }}
-        repository: ${{ github.event.pull_request.head.repo.full_name }}
+        ref: ${{ github.event.pull_request.head.ref }} # Use PR head branch reference
+        repository: ${{ github.event.pull_request.head.repo.full_name }} # PR source repo
 
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v5 # Set up a Python interpreter
       with:
-          python-version: '3.10'
+          python-version: '3.10' # Use Python 3.10
 
-    - name: Changed files
+    - name: Changed files # Step to get all changed files in this PR
       id: changed_files
-      uses: jitterbit/get-changed-files@v1
+      uses: jitterbit/get-changed-files@v1 # This action identifies changed files and outputs them
 
-    - uses: pre-commit/action@v3.0.1
+    - uses: pre-commit/action@v3.0.1 # Run pre-commit hooks (e.g., black, flake8, isort)
       with:
         extra_args: --files ${{ steps.changed_files.outputs.all }}
+        # Only run pre-commit on changed files (not entire repo)

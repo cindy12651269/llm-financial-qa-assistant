@@ -1,5 +1,5 @@
-from document_loader.format import Format
-from document_loader.text_splitter import RecursiveCharacterTextSplitter, create_recursive_text_splitter
+from chatbot.document_loader.format import Format
+from chatbot.document_loader.text_splitter import RecursiveCharacterTextSplitter, create_recursive_text_splitter
 
 
 def test_recursive_character_text_splitter_keep_separators() -> None:

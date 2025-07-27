@@ -1,7 +1,7 @@
 import pytest
-from bot.memory.embedder import Embedder
-from bot.memory.vector_database.chroma import Chroma
-from entities.document import Document
+from chatbot.bot.memory.embedder import Embedder
+from chatbot.bot.memory.vector_database.chroma import Chroma
+from chatbot.entities.document import Document
 
 
 @pytest.fixture
