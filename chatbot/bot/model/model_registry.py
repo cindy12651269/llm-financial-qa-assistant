@@ -1,44 +1,29 @@
 from enum import Enum
 
-from bot.model.settings.deep_seek import DeepSeekR1SevenSettings
-from bot.model.settings.llama import Llama31Settings, Llama31ToolSettings, Llama32OneSettings, Llama32ThreeSettings
-from bot.model.settings.openchat import OpenChat35Settings, OpenChat36Settings
+from bot.model.settings.llama import Llama32ThreeSettings
+from bot.model.settings.openchat import OpenChat36Settings
 from bot.model.settings.phi import Phi35Settings
-from bot.model.settings.qwen import Qwen25ThreeMathReasoningSettings, Qwen25ThreeSettings
-from bot.model.settings.stablelm_zephyr import StableLMZephyrSettings
+from bot.model.settings.qwen import Qwen25ThreeSettings, Qwen25ThreeMathReasoningSettings
 from bot.model.settings.starling import StarlingSettings
 
 
 class Model(Enum):
-    STABLELM_ZEPHYR = "stablelm-zephyr"
-    OPENCHAT_3_5 = "openchat-3.5"
-    OPENCHAT_3_6 = "openchat-3.6"
-    STARLING = "starling"
-    PHI_3_5 = "phi-3.5"
-    LLAMA_3_1 = "llama-3.1"
-    LLAMA_3_1_tool = "llama-3.1-tool"
-    LLAMA_3_2_one = "llama-3.2:1b"
-    LLAMA_3_2_three = "llama-3.2"
-    QWEN_2_5_THREE = "qwen-2.5:3b"
-    QWEN_2_5_THREE_MATH_REASONING = "qwen-2.5:3b-math-reasoning"
-    DEEP_SEEK_R1_SEVEN = "deep-seek-r1:7b"
+    LLAMA_3_2_3B = "llama-3.2:3b"
+    OPENCHAT_3_6_8B = "openchat-3.6"
+    PHI_3_5_MINI = "phi-3.5"
+    QWEN_2_5_3B = "qwen-2.5:3b"
+    QWEN_2_5_CODER_3B = "qwen-2.5:3b-math-reasoning"
+    STARLING_LM_7B_BETA = "starling"
 
 
 SUPPORTED_MODELS = {
-    Model.STABLELM_ZEPHYR.value: StableLMZephyrSettings,
-    Model.OPENCHAT_3_5.value: OpenChat35Settings,
-    Model.OPENCHAT_3_6.value: OpenChat36Settings,
-    Model.STARLING.value: StarlingSettings,
-    Model.PHI_3_5.value: Phi35Settings,
-    Model.LLAMA_3_1.value: Llama31Settings,
-    Model.LLAMA_3_1_tool.value: Llama31ToolSettings,
-    Model.LLAMA_3_2_one.value: Llama32OneSettings,
-    Model.LLAMA_3_2_three.value: Llama32ThreeSettings,
-    Model.QWEN_2_5_THREE.value: Qwen25ThreeSettings,
-    Model.QWEN_2_5_THREE_MATH_REASONING.value: Qwen25ThreeMathReasoningSettings,
-    Model.DEEP_SEEK_R1_SEVEN.value: DeepSeekR1SevenSettings,
+    Model.LLAMA_3_2_3B.value: Llama32ThreeSettings,
+    Model.OPENCHAT_3_6_8B.value: OpenChat36Settings,
+    Model.PHI_3_5_MINI.value: Phi35Settings,
+    Model.QWEN_2_5_3B.value: Qwen25ThreeSettings,
+    Model.QWEN_2_5_CODER_3B.value: Qwen25ThreeMathReasoningSettings,
+    Model.STARLING_LM_7B_BETA.value: StarlingSettings,
 }
-
 
 def get_models():
     return list(SUPPORTED_MODELS.keys())

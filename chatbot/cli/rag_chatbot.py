@@ -17,18 +17,25 @@ from pyfiglet import Figlet
 from rich.console import Console
 from rich.markdown import Markdown
 
-logger = get_logger(__name__)
+logger = get_logger(__name__)  # Initialize the logger for this module
 
 
 def get_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="AI Chatbot")
+    """
+    Parses command-line arguments for model selection, token limits, and context strategy.
+    Returns an argparse.Namespace object with the parsed options.
+    """
+    parser = argparse.ArgumentParser(description="Finance AI Assistant")
 
     model_list = get_models()
-    default_model = Model.LLAMA_3_1.value
+    default_model = Model.LLAMA_3_2_3B.value 
+    # LLaMA 3.2 3B is fast, lightweight, and sufficient for most financial glossary and definition tasks.
+    # Suitable as default during development and CLI use.
 
-    synthesis_strategy_list = get_ctx_synthesis_strategies()
-    default_synthesis_strategy = synthesis_strategy_list[0]
+    synthesis_strategy_list = get_ctx_synthesis_strategies() # Retrieve all synthesis strategies
+    default_synthesis_strategy = synthesis_strategy_list[0]  # Use the first one as default
 
+    # Model argument
     parser.add_argument(
         "--model",
         type=str,
@@ -39,7 +46,7 @@ def get_args() -> argparse.Namespace:
         nargs="?",
         default=default_model,
     )
-
+    # Strategy argument
     parser.add_argument(
         "--synthesis-strategy",
         type=str,
@@ -50,7 +57,7 @@ def get_args() -> argparse.Namespace:
         nargs="?",
         default=default_synthesis_strategy,
     )
-
+    # How many chunks to retrieve
     parser.add_argument(
         "--k",
         type=int,
@@ -58,7 +65,7 @@ def get_args() -> argparse.Namespace:
         required=False,
         default=2,
     )
-
+    # Token limit for LLM generation
     parser.add_argument(
         "--max-new-tokens",
         type=int,
@@ -66,40 +73,49 @@ def get_args() -> argparse.Namespace:
         required=False,
         default=512,
     )
-
+    # Return the parsed arguments
     return parser.parse_args()
-
+    
 
 def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
-    custom_fig = Figlet(font="graffiti")
-    console = Console(color_system="windows")
-    console.print(custom_fig.renderText("ChatBot"))
+    """
+    Main chat loop. Accepts user questions, performs retrieval, and generates answers using LLM.
+    """
+    custom_fig = Figlet(font="graffiti") # Create ASCII-styled banner
+    console = Console(color_system="windows")  # Initialize rich console for pretty output
+    console.print(custom_fig.renderText("ChatBot")) # Display bot name in ASCII art
     console.print(
-        "[bold magenta]Hi! 👋, I'm your friendly chatbot 🦜 here to assist you. "
-        "\nHow can I help you today? [/bold "
+        "[bold magenta]Hi! 👋, I'm your financial assistant. Here to help you. "
+        "\nAsk me anything about trading, metrics, or financial reports. [/bold "
         "magenta]Type 'exit' to stop."
     )
 
     while True:
-        console.print("[bold green]Please enter your question:[/bold green]")
+        console.print("[bold green]Please enter your financial question:[/bold green]")
         question = read_input()
 
         if question.lower() == "exit":
             break
 
-        logger.info(f"--- Question: {question}, Chat_history: {chat_history} ---")
+        logger.info(f"--- Question: {question}, Chat_history: {chat_history} ---") # Log question and chat history
 
-        start_time = time.time()
+        start_time = time.time() # Start timer to measure response time
         refined_question = refine_question(llm, question, chat_history)
-
+        
+        # Prepend role instruction to the query for improved LLM focus
         retrieved_contents, sources = index.similarity_search_with_threshold(query=refined_question, k=parameters.k)
 
         console.print("\n[bold magenta]Sources:[/bold magenta]")
         for source in sources:
             console.print(Markdown(prettify_source(source)))
 
-        console.print("\n[bold magenta]Answer:[/bold magenta]")
+        console.print("\n[bold magenta]Sources:[/bold magenta]")
+        for source in sources:
+            console.print(Markdown(prettify_source(source)))  # Display each source in markdown format
 
+        console.print("\n[bold magenta]Answer:[/bold magenta]")  # Print section header
+
+        # Stream response from LLM using retrieved context
         streamer, fmt_prompts = answer_with_context(
             llm=llm,
             ctx_synthesis_strategy=synthesis_strategy,
@@ -108,12 +124,13 @@ def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
             retrieved_contents=retrieved_contents,
             max_new_tokens=parameters.max_new_tokens,
         )
-        answer = ""
-        for token in streamer:
-            parsed_token = llm.parse_token(token)
+        answer = "" # Initialize empty answer buffer
+        for token in streamer: # Iterate through streamed tokens
+            parsed_token = llm.parse_token(token) # Parse each token from LLM
             answer += parsed_token
             print(parsed_token, end="", flush=True)
-
+        
+        # Save this Q&A to chat history
         chat_history.append(
             f"question: {refined_question}, answer: {answer}",
         )
@@ -122,33 +139,34 @@ def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
         if answer:
             console.print(Markdown(answer))
             took = time.time() - start_time
-            print(f"\n--- Took {took:.2f} seconds ---")
+            print(f"\n--- Took {took:.2f} seconds ---") # Print how long it took
         else:
-            console.print("[bold red]Something went wrong![/bold red]")
+            console.print("[bold red]Something went wrong![/bold red]") # Error fallback
 
 
 def main(parameters):
-    model_settings = get_model_settings(parameters.model)
+    """
+    Main function to set up model, vector database, and begin the chatbot loop.
+    """
+    model_settings = get_model_settings(parameters.model) # Get model configuration based on CLI input
 
-    root_folder = Path(__file__).resolve().parent.parent.parent
-    model_folder = root_folder / "models"
-    vector_store_path = root_folder / "vector_store" / "docs_index"
+    root_folder = Path(__file__).resolve().parent.parent.parent  # Compute root directory of the project
+    model_folder = root_folder / "models"  # Path to local model files
+    vector_store_path = root_folder / "vector_store" / "docs_index"  # Path to vector DB
 
-    llm = LamaCppClient(model_folder=model_folder, model_settings=model_settings)
+    llm = LamaCppClient(model_folder=model_folder, model_settings=model_settings)  # Initialize LLM client
+    synthesis_strategy = get_ctx_synthesis_strategy(parameters.synthesis_strategy, llm=llm)  # Get retrieval strategy
+    chat_history = ChatHistory(total_length=2)  # Create chat history manager, only store last 2 exchanges
 
-    synthesis_strategy = get_ctx_synthesis_strategy(parameters.synthesis_strategy, llm=llm)
-    chat_history = ChatHistory(total_length=2)
+    embedding = Embedder()  # Create text embedder
+    index = Chroma(persist_directory=str(vector_store_path), embedding=embedding)  # Load vector database
 
-    embedding = Embedder()
-    index = Chroma(persist_directory=str(vector_store_path), embedding=embedding)
-
-    loop(llm, chat_history, synthesis_strategy, index, parameters)
-
+    loop(llm, chat_history, synthesis_strategy, index, parameters)  # Enter chat loop
 
 if __name__ == "__main__":
     try:
-        args = get_args()
-        main(args)
+        args = get_args() # Parse arguments from command-line
+        main(args) # Run main program
     except Exception as error:
         logger.error(f"An error occurred: {str(error)}", exc_info=True, stack_info=True)
         sys.exit(1)
