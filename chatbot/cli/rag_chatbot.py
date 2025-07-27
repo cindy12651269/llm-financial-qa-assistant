@@ -85,9 +85,8 @@ def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
     console = Console(color_system="windows")  # Initialize rich console for pretty output
     console.print(custom_fig.renderText("ChatBot")) # Display bot name in ASCII art
     console.print(
-        "[bold magenta]Hi! 👋, I'm your financial assistant. Here to help you. "
-        "\nAsk me anything about trading, metrics, or financial reports. [/bold "
-        "magenta]Type 'exit' to stop."
+    "[bold magenta]Hi! 👋, I'm your financial assistant. Here to help you. "
+    "\nAsk me anything about trading, metrics, or financial reports. Type 'exit' to stop.[/bold magenta]"
     )
 
     while True:
@@ -104,10 +103,6 @@ def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
         
         # Prepend role instruction to the query for improved LLM focus
         retrieved_contents, sources = index.similarity_search_with_threshold(query=refined_question, k=parameters.k)
-
-        console.print("\n[bold magenta]Sources:[/bold magenta]")
-        for source in sources:
-            console.print(Markdown(prettify_source(source)))
 
         console.print("\n[bold magenta]Sources:[/bold magenta]")
         for source in sources:
