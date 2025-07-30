@@ -47,6 +47,9 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: poetry install --no-root --no-interaction
 
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
+        
       - name: Run tests
         run: |
           poetry run pytest --durations=5 --log-cli-level=DEBUG --capture=tee-sys -v
