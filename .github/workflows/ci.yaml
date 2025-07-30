@@ -18,35 +18,47 @@ on:  # Trigger conditions for the workflow
 jobs:
   test:  # Job name is 'test'
     runs-on: ubuntu-latest  # Use the latest Ubuntu runner
-    timeout-minutes: 20  # Stop the job if it exceeds 20 minutes
+    timeout-minutes: 10  # Fail early if job takes too long
 
     steps:
+    
       - name: Checkout
-        uses: actions/checkout@v4  # Checkout the repository code
+        uses: actions/checkout@v4  # Clone repository code
         with:
-          ref: ${{ github.event.pull_request.head.ref }}  # Use PR head branch
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          fetch-depth: 1  # Shallow clone for speed
 
       - name: Install Python
-        uses: actions/setup-python@v5  # Setup Python runtime
+        uses: actions/setup-python@v5  # Set up Python runtime
         with:
-          python-version: '3.10.6'  # Use Python 3.10.6
+          python-version: '3.10.6'
+          cache: 'poetry'  # Enable Poetry dependency caching
 
       - name: Get poetry version
         id: poetry-version
         run: echo "poetry-version=$(cat version/poetry)" >> "$GITHUB_OUTPUT"
-        # Reads the poetry version from version/poetry file and exposes it to later steps
+        # Reads Poetry version from file and makes it available to later steps
 
       - name: Install poetry
-        uses: snok/install-poetry@v1  # Install Poetry via reusable action
+        uses: snok/install-poetry@v1
         with:
           version: ${{ steps.poetry-version.outputs.poetry-version }}
-          virtualenvs-in-project: true  # Store .venv in project root (not global)
+          virtualenvs-in-project: true  # Create .venv in project directory
 
       - name: Get llama-cpp version
         id: llama-cpp-version
         run: echo "llama-cpp-version=$(cat version/llama_cpp)" >> "$GITHUB_OUTPUT"
-        # Reads llama-cpp-python version and stores it as an output variable
+        # Reads llama-cpp-python version from file
+
+      - name: Cache virtualenv and dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            .venv
+            ~/.cache/pypoetry
+            ~/.cache/pip
+          key: ${{ runner.os }}-venv-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-
 
       - name: Setup environment
         # Ensure lockfile is up to date, install all deps (no local build)
@@ -55,11 +67,10 @@ jobs:
           poetry lock --check  
           poetry install --no-root --no-ansi   
           . .venv/bin/activate && pip3 install llama-cpp-python==${{ steps.llama-cpp-version.outputs.llama-cpp-version }}
-          
 
       - name: Run tests
-        # Run all tests with detailed logging and slowest 5 durations
+        # Run all tests with compact output
         run: |
-          poetry run python -m pytest --durations=5 --log-cli-level=DEBUG --capture=tee-sys -v
-          
+          poetry run pytest tests/ --tb=short -q
+        
 
