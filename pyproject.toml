@@ -120,3 +120,9 @@ pythonpath = [
     "chatbot",
     "tests"
 ]
+
+filterwarnings = [
+  "ignore::DeprecationWarning:fastapi.*",
+  "ignore::DeprecationWarning:pydantic_core.*",
+]
+
