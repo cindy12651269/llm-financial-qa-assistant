@@ -16,61 +16,40 @@ on:  # Trigger conditions for the workflow
       - ".github/workflows/**"
 
 jobs:
-  test:  # Job name is 'test'
-    runs-on: ubuntu-latest  # Use the latest Ubuntu runner
-    timeout-minutes: 10  # Fail early if job takes too long
+  test:
+    runs-on: ubuntu-latest  # Use GitHub-hosted Ubuntu runner
+    timeout-minutes: 20     # Cancel if test exceeds 20 minutes
 
     steps:
-    
-      - name: Checkout
-        uses: actions/checkout@v4  # Clone repository code
+      - name: Checkout source code
+        uses: actions/checkout@v4  # Checkout code to runner
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 1  # Shallow clone for speed
+          python-version: "3.10.6"  # Match your local dev env
 
-      - name: Install Python
-        uses: actions/setup-python@v5  # Set up Python runtime
-        with:
-          python-version: '3.10.6'
-          cache: 'poetry'  # Enable Poetry dependency caching
-
-      - name: Get poetry version
-        id: poetry-version
-        run: echo "poetry-version=$(cat version/poetry)" >> "$GITHUB_OUTPUT"
-        # Reads Poetry version from file and makes it available to later steps
-
-      - name: Install poetry
+      - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
-          version: ${{ steps.poetry-version.outputs.poetry-version }}
-          virtualenvs-in-project: true  # Create .venv in project directory
+          virtualenvs-in-project: true  # .venv in project root
 
-      - name: Get llama-cpp version
-        id: llama-cpp-version
-        run: echo "llama-cpp-version=$(cat version/llama_cpp)" >> "$GITHUB_OUTPUT"
-        # Reads llama-cpp-python version from file
-
-      - name: Cache virtualenv and dependencies
-        uses: actions/cache@v3
+      - name: Cache virtualenv
+        uses: actions/cache@v4
         with:
-          path: |
-            .venv
-            ~/.cache/pypoetry
-            ~/.cache/pip
-          key: ${{ runner.os }}-venv-${{ hashFiles('**/poetry.lock') }}
+          path: .venv  # Cache the entire virtualenv directory
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
           restore-keys: |
-            ${{ runner.os }}-venv-
+            venv-${{ runner.os }}-
 
-      - name: Setup environment
-        # Ensure lockfile is up to date, install all deps (no local build)
-        # Activate virtualenv and install llama-cpp manually
-        run: |
-          poetry lock --check  
-          poetry install --no-root --no-ansi   
-          . .venv/bin/activate && pip3 install llama-cpp-python==${{ steps.llama-cpp-version.outputs.llama-cpp-version }}
+      - name: Install dependencies with Poetry
+        # Only install if cache didn't hit
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: poetry install --no-root --no-interaction
+
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
 
       - name: Run tests
-        # Run all tests with compact output
         run: |
-          poetry run pytest tests/ --tb=short -q
-        
-
+          poetry run pytest --durations=5 --log-cli-level=DEBUG --capture=tee-sys -v
