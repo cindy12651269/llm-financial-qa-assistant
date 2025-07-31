@@ -1,6 +1,5 @@
-import concurrent.futures # For future support of multithreaded document loading
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 from entities.document import Document
 from helpers.log import get_logger
