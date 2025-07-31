@@ -79,7 +79,7 @@ exclude = [
     ".pytest_cache",
     "docs"
 ]
-line-length = 200
+line-length = 400
 indent-width = 4
 
 [tool.ruff.lint]
