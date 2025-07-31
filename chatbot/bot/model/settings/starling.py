@@ -11,13 +11,12 @@ class StarlingSettings(ModelSettings):
     file_name = "Starling-LM-7B-beta-Q4_K_M.gguf"
 
     config = {
-        "n_ctx": 4096,       # Max sequence length supported by model
-        "n_threads": 8,      # Number of CPU threads used during inference
-        "n_gpu_layers": 50   # Number of transformer layers offloaded to GPU
+        "n_ctx": 4096,  # Max sequence length supported by model
+        "n_threads": 8,  # Number of CPU threads used during inference
+        "n_gpu_layers": 50,  # Number of transformer layers offloaded to GPU
     }
 
     config_answer = {
         "temperature": 0.7,  # Sampling temperature for answer creativity
-        "stop": []           # Stop tokens (empty = default)
+        "stop": [],  # Stop tokens (empty = default)
     }
-

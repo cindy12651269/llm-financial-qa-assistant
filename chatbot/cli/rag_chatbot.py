@@ -28,11 +28,11 @@ def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Finance AI Assistant")
 
     model_list = get_models()
-    default_model = Model.LLAMA_3_2_3B.value 
+    default_model = Model.LLAMA_3_2_3B.value
     # LLaMA 3.2 3B is fast, lightweight, and sufficient for most financial glossary and definition tasks.
     # Suitable as default during development and CLI use.
 
-    synthesis_strategy_list = get_ctx_synthesis_strategies() # Retrieve all synthesis strategies
+    synthesis_strategy_list = get_ctx_synthesis_strategies()  # Retrieve all synthesis strategies
     default_synthesis_strategy = synthesis_strategy_list[0]  # Use the first one as default
 
     # Model argument
@@ -75,18 +75,18 @@ def get_args() -> argparse.Namespace:
     )
     # Return the parsed arguments
     return parser.parse_args()
-    
+
 
 def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
     """
     Main chat loop. Accepts user questions, performs retrieval, and generates answers using LLM.
     """
-    custom_fig = Figlet(font="graffiti") # Create ASCII-styled banner
+    custom_fig = Figlet(font="graffiti")  # Create ASCII-styled banner
     console = Console(color_system="windows")  # Initialize rich console for pretty output
-    console.print(custom_fig.renderText("ChatBot")) # Display bot name in ASCII art
+    console.print(custom_fig.renderText("ChatBot"))  # Display bot name in ASCII art
     console.print(
-    "[bold magenta]Hi! 👋, I'm your financial assistant. Here to help you. "
-    "\nAsk me anything about trading, metrics, or financial reports. Type 'exit' to stop.[/bold magenta]"
+        "[bold magenta]Hi! 👋, I'm your financial assistant. Here to help you. "
+        "\nAsk me anything about trading, metrics, or financial reports. Type 'exit' to stop.[/bold magenta]"
     )
 
     while True:
@@ -96,11 +96,11 @@ def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
         if question.lower() == "exit":
             break
 
-        logger.info(f"--- Question: {question}, Chat_history: {chat_history} ---") # Log question and chat history
+        logger.info(f"--- Question: {question}, Chat_history: {chat_history} ---")  # Log question and chat history
 
-        start_time = time.time() # Start timer to measure response time
+        start_time = time.time()  # Start timer to measure response time
         refined_question = refine_question(llm, question, chat_history)
-        
+
         # Prepend role instruction to the query for improved LLM focus
         retrieved_contents, sources = index.similarity_search_with_threshold(query=refined_question, k=parameters.k)
 
@@ -119,12 +119,12 @@ def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
             retrieved_contents=retrieved_contents,
             max_new_tokens=parameters.max_new_tokens,
         )
-        answer = "" # Initialize empty answer buffer
-        for token in streamer: # Iterate through streamed tokens
-            parsed_token = llm.parse_token(token) # Parse each token from LLM
+        answer = ""  # Initialize empty answer buffer
+        for token in streamer:  # Iterate through streamed tokens
+            parsed_token = llm.parse_token(token)  # Parse each token from LLM
             answer += parsed_token
             print(parsed_token, end="", flush=True)
-        
+
         # Save this Q&A to chat history
         chat_history.append(
             f"question: {refined_question}, answer: {answer}",
@@ -134,16 +134,16 @@ def loop(llm, chat_history, synthesis_strategy, index, parameters) -> None:
         if answer:
             console.print(Markdown(answer))
             took = time.time() - start_time
-            print(f"\n--- Took {took:.2f} seconds ---") # Print how long it took
+            print(f"\n--- Took {took:.2f} seconds ---")  # Print how long it took
         else:
-            console.print("[bold red]Something went wrong![/bold red]") # Error fallback
+            console.print("[bold red]Something went wrong![/bold red]")  # Error fallback
 
 
 def main(parameters):
     """
     Main function to set up model, vector database, and begin the chatbot loop.
     """
-    model_settings = get_model_settings(parameters.model) # Get model configuration based on CLI input
+    model_settings = get_model_settings(parameters.model)  # Get model configuration based on CLI input
 
     root_folder = Path(__file__).resolve().parent.parent.parent  # Compute root directory of the project
     model_folder = root_folder / "models"  # Path to local model files
@@ -158,10 +158,11 @@ def main(parameters):
 
     loop(llm, chat_history, synthesis_strategy, index, parameters)  # Enter chat loop
 
+
 if __name__ == "__main__":
     try:
-        args = get_args() # Parse arguments from command-line
-        main(args) # Run main program
+        args = get_args()  # Parse arguments from command-line
+        main(args)  # Run main program
     except Exception as error:
         logger.error(f"An error occurred: {str(error)}", exc_info=True, stack_info=True)
         sys.exit(1)

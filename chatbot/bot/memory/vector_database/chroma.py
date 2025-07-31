@@ -4,10 +4,11 @@ from typing import Any, Callable, Iterable
 
 import chromadb
 import chromadb.config
-from chatbot.bot.memory.embedder import Embedder
-from chatbot.bot.memory.vector_database.distance_metric import DistanceMetric, get_relevance_score_fn
 from chromadb.utils.batch_utils import create_batches
 from cleantext import clean
+
+from chatbot.bot.memory.embedder import Embedder
+from chatbot.bot.memory.vector_database.distance_metric import DistanceMetric, get_relevance_score_fn
 from chatbot.entities.document import Document
 
 logger = logging.getLogger(__name__)
@@ -18,15 +19,19 @@ class Chroma:
     Wrapper class for Chroma vector database integration.
     Supports storing and retrieving financial documents with embedding and metadata.
     """
+
     # Initializes the Chroma vector store client for financial document use cases.
     def __init__(
         self,
-        client: chromadb.Client = None,    # client (chromadb.Client, optional): An existing Chroma client. If not provided, one will be created.
-        embedding: Embedder | None = None, # embedding (Embedder, optional): The embedding engine used to convert text into vectors.
-        persist_directory: str | None = None, # persist_directory (str, optional): Filesystem path where Chroma should persist its vector index.
-        collection_name: str = "finance_docs", # collection_name (str): The name of the vector collection to use. Defaults to "finance_docs".
-        collection_metadata: dict | None = None, # collection_metadata (dict, optional): Metadata associated with the collection (e.g., index type).
-        is_persistent: bool = True, # is_persistent (bool): Whether to persist the vector index to disk. Defaults to True.
+        client: chromadb.Client = None,  # client (chromadb.Client, optional): An existing Chroma client. If not provided, one will be created.
+        embedding: Embedder
+        | None = None,  # embedding (Embedder, optional): The embedding engine used to convert text into vectors.
+        persist_directory: str
+        | None = None,  # persist_directory (str, optional): Filesystem path where Chroma should persist its vector index.
+        collection_name: str = "finance_docs",  # collection_name (str): The name of the vector collection to use. Defaults to "finance_docs".
+        collection_metadata: dict
+        | None = None,  # collection_metadata (dict, optional): Metadata associated with the collection (e.g., index type).
+        is_persistent: bool = True,  # is_persistent (bool): Whether to persist the vector index to disk. Defaults to True.
     ) -> None:
         # Create a configuration object for Chroma to control persistence and location
         client_settings = chromadb.config.Settings(is_persistent=is_persistent)
@@ -38,13 +43,13 @@ class Chroma:
         else:
             self.client = chromadb.Client(client_settings)
 
-        self.embedding = embedding # Set the embedding model to use
+        self.embedding = embedding  # Set the embedding model to use
 
         # Either get an existing collection or create one named `finance_docs`
         # This collection stores our embedded financial text data
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
-            embedding_function=None, # Handle embeddings manually
+            embedding_function=None,  # Handle embeddings manually
             metadata=collection_metadata,
         )
 
@@ -71,10 +76,10 @@ class Chroma:
         """
         Low-level query method for retrieving financial documents from Chroma.
 
-        Supports querying using either raw financial text (`query_texts`) or precomputed 
-        embedding vectors (`query_embeddings`), returning top-k similar document chunks 
+        Supports querying using either raw financial text (`query_texts`) or precomputed
+        embedding vectors (`query_embeddings`), returning top-k similar document chunks
         with optional metadata filters.
-        
+
         Args:
             query_texts (list[str] | None): Raw financial queries (e.g., "What is ROE?").
             query_embeddings (list[list[float]] | None): Precomputed embeddings for the queries.
@@ -89,7 +94,7 @@ class Chroma:
             - "metadatas": Metadata (e.g., report_type, sector)
             - "distances": Vector distances
             - "ids": Internal doc IDs
-        
+
         Notes:
             - Provide either `query_texts` or `query_embeddings`, not both.
             - Preferred wrapper: `similarity_search_with_threshold()` for financial RAG pipelines.
@@ -104,7 +109,7 @@ class Chroma:
             where_document=where_document,
             **kwargs,
         )
-    
+
     # Add a batch of texts and their financial metadata into Chroma vectorstore
     def add_texts(
         self,
@@ -116,8 +121,8 @@ class Chroma:
         Embed and store a batch of financial texts into the Chroma vector database,
         along with optional financial metadata and document IDs.
 
-        Each text may correspond to a paragraph or section from financial reports, 
-        filings (e.g., 10-K), earnings call transcripts, or glossary entries. Metadata 
+        Each text may correspond to a paragraph or section from financial reports,
+        filings (e.g., 10-K), earnings call transcripts, or glossary entries. Metadata
         can include tags such as fiscal_year, report_type, sector, and organization.
 
         Args:
@@ -129,7 +134,7 @@ class Chroma:
         Returns:
             list[str]: List of document IDs inserted into the vector database.
         """
-        
+
         # If no IDs are provided, generate unique UUIDs
         if ids is None:
             ids = [str(uuid.uuid4()) for _ in texts]
@@ -139,14 +144,14 @@ class Chroma:
         # Generate embeddings for financial texts if embedding model is present
         if self.embedding is not None:
             embeddings = self.embedding.embed_documents(texts)
-        
+
         if metadatas:
             # Fill any missing metadata entries with empty dicts
             # Did not specify metadata for all texts
             length_diff = len(texts) - len(metadatas)
             if length_diff:
                 metadatas = metadatas + [{}] * length_diff
-            
+
             # Separate texts with metadata vs. without
             empty_ids = []
             non_empty_ids = []
@@ -186,7 +191,7 @@ class Chroma:
                     documents=texts_without_metadatas,
                     ids=ids_without_metadatas,
                 )
-        else: # Insert all texts if no metadata provided
+        else:  # Insert all texts if no metadata provided
             self.collection.upsert(
                 embeddings=embeddings,
                 documents=texts,
@@ -203,8 +208,8 @@ class Chroma:
         """
         Adds a batch of raw financial texts to the Chroma vector store.
 
-        This method is suitable for adding financial documents such as 
-        glossary definitions, KPI explanations, or pre-cleaned earnings call excerpts. 
+        This method is suitable for adding financial documents such as
+        glossary definitions, KPI explanations, or pre-cleaned earnings call excerpts.
         Metadata fields can include financial dimensions like "fiscal_year", "organization", or "report_type".
 
         Args:
@@ -255,12 +260,13 @@ class Chroma:
         Returns:
             None
         """
-        texts = [clean(doc.page_content, no_emoji=True) for doc in chunks] # Sanitize text for consistency
-        metadatas = [doc.metadata for doc in chunks] # Retain structured financial tags
+        texts = [clean(doc.page_content, no_emoji=True) for doc in chunks]  # Sanitize text for consistency
+        metadatas = [doc.metadata for doc in chunks]  # Retain structured financial tags
         self.from_texts(
             texts=texts,
             metadatas=metadatas,
         )
+
     # Perform semantic search and return results with financial metadata fields
     def similarity_search_with_threshold(
         self,
@@ -272,7 +278,7 @@ class Chroma:
         Perform a semantic similarity search using financial context,
         and return results with metadata such as fiscal year, report type, etc.
 
-        This is often used in retrieval-augmented generation (RAG) settings 
+        This is often used in retrieval-augmented generation (RAG) settings
         for answering financial questions from company filings or glossary entries.
 
         Args:
@@ -320,7 +326,7 @@ class Chroma:
             )
 
         return retrieved_contents, sources
-    
+
     # Simple search wrapper to get the most relevant financial documents
     def similarity_search(self, query: str, k: int = 4, filter: dict[str, str] | None = None) -> list[Document]:
         """
@@ -349,7 +355,7 @@ class Chroma:
     ) -> list[tuple[Document, float]]:
         """
         Perform low-level vector similarity search over embedded financial texts.
-        Useful for retrieving raw Chroma vector distances (e.g., cosine, L2) 
+        Useful for retrieving raw Chroma vector distances (e.g., cosine, L2)
         between a user's query and stored financial documents (e.g., 10-K filings, earnings transcripts).
 
         Args:
@@ -392,9 +398,9 @@ class Chroma:
         Choose an appropriate scoring function to convert vector distance into a relevance score [0, 1].
 
         This function is critical in financial search pipelines to normalize vector distances
-        across various distance metrics (L2, cosine, etc.), enabling consistent interpretation 
+        across various distance metrics (L2, cosine, etc.), enabling consistent interpretation
         of document relevance to user financial queries.
-    
+
         Returns:
             Callable: A function that maps raw distance → normalized relevance score.
         """
@@ -435,4 +441,3 @@ class Chroma:
         if any(similarity < 0.0 or similarity > 1.0 for _, similarity in docs_and_similarities):
             logger.warning("Relevance scores must be between" f" 0 and 1, got {docs_and_similarities}")
         return docs_and_similarities
-    

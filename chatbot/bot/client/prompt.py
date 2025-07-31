@@ -66,6 +66,7 @@ If context is irrelevant, just answer directly.
 Avoid rephrasing the question; give a concise, helpful answer.
 """
 
+
 def generate_qa_prompt(template: str, system: str, question: str) -> str:
     """
     Generates a prompt for a financial question-answer task.
@@ -97,6 +98,7 @@ def generate_ctx_prompt(template: str, system: str, question: str, context: str 
     """
     prompt = template.format(system=system, context=context, question=question)
     return prompt
+
 
 def generate_refined_ctx_prompt(
     template: str, system: str, question: str, existing_answer: str, context: str = ""

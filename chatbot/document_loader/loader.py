@@ -1,6 +1,6 @@
-import concurrent.futures
+import concurrent.futures # For future support of multithreaded document loading
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 from entities.document import Document
 from helpers.log import get_logger
@@ -11,12 +11,16 @@ logger = get_logger(__name__)
 
 
 class DirectoryLoader:
-    """Load documents from a directory."""
+    """
+    Loader class for extracting financial documents from a specific directory.
+    Optimized for single-file use cases (e.g., demo.md) where financial metadata
+    such as report type, fiscal year, and organization can be pre-defined.
+    """
 
     def __init__(
         self,
         path: Path,
-        glob: str = "**/[!.]*",
+        glob: str = "demo.md",
         recursive: bool = False,
         show_progress: bool = False,
         use_multithreading: bool = False,
@@ -26,14 +30,16 @@ class DirectoryLoader:
         """Initialize with a path to directory and how to glob over it.
 
         Args:
-            path: Path to directory.
-            glob: Glob pattern to use to find files. Defaults to "**/[!.]*"
-               (all files except hidden).
-            recursive: Whether to recursively search for files. Defaults to False.
-            show_progress: Whether to show a progress bar. Defaults to False.
-            use_multithreading: Whether to use multithreading. Defaults to False.
-            max_concurrency: The maximum number of threads to use. Defaults to 4.
-            partition_kwargs: Keyword arguments to pass to unstructured `partition` function.
+            Initialize the DirectoryLoader.
+
+        Args:
+            path (Path): Root path to the directory containing demo.md
+            glob (str): File match pattern (default: 'demo.md')
+            recursive (bool): Whether to search subdirectories (not used)
+            show_progress (bool): Whether to show tqdm progress bar
+            use_multithreading (bool): Enable multithreaded parsing (not required here)
+            max_concurrency (int): Maximum thread count for parsing
+            partition_kwargs (dict): Extra arguments for `unstructured.partition` API
         """
         self.path = path
         self.glob = glob
@@ -44,25 +50,24 @@ class DirectoryLoader:
         self.partition_kwargs = partition_kwargs
 
     def load(self) -> list[Document]:
-        """Load documents."""
+        """
+        Load financial documents (expecting a single demo file).
+
+        Returns:
+            list[Document]: List of Document objects with financial metadata
+        """
         if not self.path.exists():
             raise FileNotFoundError(f"Directory not found: '{self.path}'")
         if not self.path.is_dir():
             raise ValueError(f"Expected directory, got file: '{self.path}'")
 
         docs: list[Document] = []
-        items = list(self.path.rglob(self.glob) if self.recursive else self.path.glob(self.glob))
+        items = list(self.path.rglob(self.glob))
 
-        pbar = None
-        if self.show_progress:
-            pbar = tqdm(total=len(items))
+        pbar = tqdm(total=len(items)) if self.show_progress else None
 
-        if self.use_multithreading:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_concurrency) as executor:
-                executor.map(lambda item: self.load_file(item, docs, pbar), items)
-        else:
-            for i in items:
-                self.load_file(i, docs, pbar)
+        for i in items:
+            self.load_file(i, docs, pbar)
 
         if pbar:
             pbar.close()
@@ -71,36 +76,43 @@ class DirectoryLoader:
 
     def load_file(self, doc_path: Path, docs: list[Document], pbar: Any | None) -> None:
         """
-        Load document from the specified path.
+         Load and parse a single file, apply financial metadata.
 
         Args:
-            doc_path (str): The path to the document.
-            docs: List of documents to append to.
-            pbar: Progress bar. Defaults to None.
-
+            doc_path (Path): File path (expects demo.md)
+            docs (list[Document]): Output document list
+            pbar (tqdm or None): Optional progress bar instance
         """
         if doc_path.is_file():
             try:
                 logger.debug(f"Processing file: {str(doc_path)}")
-                # Loads document from the specified path.
-                # The unstructured `partition` function and will automatically detect the file type with libmagic to
-                # determine the file's type and route it to the appropriate partitioning function.
+                # Use unstructured `partition()` to detect file type and extract content
+                # Automatically routes to the correct parser using libmagic
                 elements = partition(filename=str(doc_path), **self.partition_kwargs)
                 # Note: The `partition` function returns a list of elements that we can filter by type based on the
                 # specific format.
                 text = "\n\n".join([str(el) for el in elements])
-                docs.extend([Document(page_content=text, metadata={"source": str(doc_path)})])
+                # Inject static metadata relevant to finance domain
+                metadata = {
+                    "source": str(doc_path),
+                    "report_type": "10-K",  # Common financial report type
+                    "fiscal_year": "2023",
+                    "organization": "DemoCorp",
+                    "sector": "Technology",
+                }
+
+                docs.append(Document(page_content=text, metadata=metadata))
             finally:
                 if pbar:
                     pbar.update(1)
 
-
 if __name__ == "__main__":
+    # Script entry point for local testing/demo
     root_folder = Path(__file__).resolve().parent.parent.parent
     docs_path = root_folder / "docs"
     loader = DirectoryLoader(
         path=docs_path,
-        glob="*.md",
+        glob="demo.md",
         recursive=True,
         use_multithreading=True,
         show_progress=True,

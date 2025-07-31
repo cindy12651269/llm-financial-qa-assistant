@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
+
 @dataclass
 class Document:
     """Class for storing a piece of text and associated metadata, including financial-specific fields."""
@@ -38,10 +39,12 @@ class Document:
             organization (str, optional): The company or institution related to the document.
             sector (str, optional): Industry or sector classification.
         """
-        self.metadata.update({
-            "source": source,
-            "fiscal_year": fiscal_year,
-            "report_type": report_type,
-            "organization": organization,
-            "sector": sector
-        })    
+        self.metadata.update(
+            {
+                "source": source,
+                "fiscal_year": fiscal_year,
+                "report_type": report_type,
+                "organization": organization,
+                "sector": sector,
+            }
+        )

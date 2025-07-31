@@ -1,4 +1,5 @@
 import pytest
+
 from chatbot.bot.memory.embedder import Embedder
 from chatbot.bot.memory.vector_database.chroma import Chroma
 from chatbot.entities.document import Document
@@ -17,13 +18,15 @@ def test_initialization(chroma_instance):
 
 def test_add_texts(chroma_instance):
     texts = ["Apple reported a 12% increase in revenue for Q4 2023."]
-    metadatas = [{
-        "source": "Earnings Report",
-        "fiscal_year": "2023",
-        "report_type": "10-K",
-        "organization": "Apple Inc.",
-        "sector": "Technology"
-    }]
+    metadatas = [
+        {
+            "source": "Earnings Report",
+            "fiscal_year": "2023",
+            "report_type": "10-K",
+            "organization": "Apple Inc.",
+            "sector": "Technology",
+        }
+    ]
     ids = chroma_instance.add_texts(texts, metadatas)
     assert len(ids) == 1
 
@@ -74,4 +77,6 @@ def test_similarity_search_with_relevance_scores(chroma_instance):
     assert isinstance(results[0][0], Document)
     assert isinstance(results[0][1], float)
     assert 0.0 <= results[0][1] <= 1.0
+
+
 print(Document.__module__)

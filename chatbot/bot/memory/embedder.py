@@ -6,7 +6,7 @@ import sentence_transformers
 class Embedder:
     """
     Embedder for financial documents and queries.
-    
+
     This class transforms financial texts (e.g. earnings reports, trading terms, financial Q&A)
     into dense vector embeddings using a transformer-based model.
     """

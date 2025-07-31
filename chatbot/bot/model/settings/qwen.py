@@ -11,16 +11,12 @@ class Qwen25ThreeSettings(ModelSettings):
     file_name = "qwen2.5-3b-instruct-q4_k_m.gguf"
 
     config = {
-        "n_ctx": 4096,       # Max sequence length
-        "n_threads": 8,      # Number of CPU threads
+        "n_ctx": 4096,  # Max sequence length
+        "n_threads": 8,  # Number of CPU threads
         "n_gpu_layers": 50,  # Number of layers to offload to GPU
     }
 
-    config_answer = {
-        "temperature": 0.7,
-        "top_p": 0.95,
-        "stop": []
-    }
+    config_answer = {"temperature": 0.7, "top_p": 0.95, "stop": []}
 
 
 class Qwen25ThreeMathReasoningSettings(ModelSettings):
@@ -38,9 +34,4 @@ class Qwen25ThreeMathReasoningSettings(ModelSettings):
         "n_gpu_layers": 50,
     }
 
-    config_answer = {
-        "temperature": 0.7,
-        "top_p": 0.95,
-        "stop": []
-    }
-
+    config_answer = {"temperature": 0.7, "top_p": 0.95, "stop": []}

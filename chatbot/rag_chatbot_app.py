@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 # Set Streamlit configuration for financial chatbot
 st.set_page_config(page_title="Financial RAG Chatbot", page_icon="💰", initial_sidebar_state="collapsed")
 
+
 # Load the fine-tuned financial LLM client
 @st.cache_resource()
 def load_llm_client(model_folder: Path, model_name: str) -> LamaCppClient:
@@ -31,17 +32,20 @@ def load_llm_client(model_folder: Path, model_name: str) -> LamaCppClient:
 
     return llm
 
+
 # Initialize short-term conversation memory
 @st.cache_resource()
 def init_chat_history(total_length: int = 2) -> ChatHistory:
     chat_history = ChatHistory(total_length=total_length)
     return chat_history
 
+
 # Load financial-specific RAG strat
 @st.cache_resource()
 def load_ctx_synthesis_strategy(ctx_synthesis_strategy_name: str, _llm: LamaCppClient) -> BaseSynthesisStrategy:
     ctx_synthesis_strategy = get_ctx_synthesis_strategy(ctx_synthesis_strategy_name, llm=_llm)
     return ctx_synthesis_strategy
+
 
 # Load financial documents vector index
 @st.cache_resource()
@@ -60,6 +64,7 @@ def load_index(vector_store_path: Path) -> Chroma:
 
     return index
 
+
 # Initialize UI branding for financial assistant
 def init_page(root_folder: Path) -> None:
     """
@@ -72,12 +77,16 @@ def init_page(root_folder: Path) -> None:
 
     with central_column:
         st.image(str(root_folder / "images/bot_finance.png"), use_column_width="always")
-        st.markdown("<h4 style='text-align: center; color: grey;'>Ask about investing, ratios, or markets</h4>", unsafe_allow_html=True)
-   
+        st.markdown(
+            "<h4 style='text-align: center; color: grey;'>Ask about investing, ratios, or markets</h4>",
+            unsafe_allow_html=True,
+        )
+
     with right_column:
         st.write(" ")
 
     st.sidebar.title("Financial Assistant Options")
+
 
 # Display a finance-specific welcome message
 @st.cache_resource
@@ -87,6 +96,7 @@ def init_welcome_message() -> None:
     """
     with st.chat_message("assistant"):
         st.write("Welcome to your financial assistant. What would you like to analyze today?")
+
 
 # Allow users to clear financial conversation memory
 def reset_chat_history(chat_history: ChatHistory) -> None:
@@ -98,6 +108,7 @@ def reset_chat_history(chat_history: ChatHistory) -> None:
         st.session_state.messages = []
         chat_history.clear()
 
+
 # Display past user/assistant interactions
 def display_messages_from_history():
     """
@@ -106,6 +117,7 @@ def display_messages_from_history():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+
 
 # Main logic for launching financial RAG chatbot
 def main(parameters) -> None:
@@ -140,13 +152,14 @@ def main(parameters) -> None:
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # Step 1: Retrieve related finance documents with content previews, 
+        # Step 1: Retrieve related finance documents with content previews,
         # and updates the chat interface with the assistant's responses.
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
             with st.spinner(
-                text="📊 Refining your financial query and retrieving relevant documents– hang tight! " "This should take seconds."
+                text="📊 Refining your financial query and retrieving relevant documents– hang tight! "
+                "This should take seconds."
             ):
                 refined_user_input = refine_question(llm, user_input, chat_history=chat_history)
                 retrieved_contents, sources = index.similarity_search_with_threshold(
@@ -187,6 +200,7 @@ def main(parameters) -> None:
         st.session_state.messages.append({"role": "assistant", "content": full_response})
         took = time.time() - start_time
         logger.info(f"\n--- Took {took:.2f} seconds ---")
+
 
 # CLI arguments to select model & strategy
 def get_args() -> argparse.Namespace:

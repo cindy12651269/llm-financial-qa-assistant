@@ -125,4 +125,3 @@ filterwarnings = [
   "ignore::DeprecationWarning:fastapi.*",
   "ignore::DeprecationWarning:pydantic_core.*",
 ]
-
