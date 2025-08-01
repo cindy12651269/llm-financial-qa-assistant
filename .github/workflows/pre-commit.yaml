@@ -8,14 +8,34 @@ jobs:
     runs-on: ubuntu-latest # Use the latest stable Ubuntu runner
 
     steps:
-    - uses: actions/checkout@v4 # Check out the code from the PR
+    - name: Checkout source code
+      uses: actions/checkout@v4 # Check out the code from the PR
       with:
         ref: ${{ github.event.pull_request.head.ref }} # Use PR head branch reference
         repository: ${{ github.event.pull_request.head.repo.full_name }} # PR source repo
 
-    - uses: actions/setup-python@v5 # Set up a Python interpreter
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5 # Set up a Python interpreter
       with:
           python-version: '3.10' # Use Python 3.10
+    
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+          virtualenvs-in-project: true  # .venv in project root
+    
+    - name: Cache virtualenv
+      uses: actions/cache@v4
+      with:
+        path: .venv  # Cache the entire virtualenv directory
+        key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+        restore-keys: |
+          venv-${{ runner.os }}-
+    
+    - name: Install dependencies with Poetry
+      # Only install if cache didn't hit
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: poetry install --no-root --no-interaction
 
     - name: Changed files # Step to get all changed files in this PR
       id: changed_files
