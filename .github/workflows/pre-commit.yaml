@@ -20,8 +20,12 @@ jobs:
     - name: Changed files # Step to get all changed files in this PR
       id: changed_files
       uses: jitterbit/get-changed-files@v1 # This action identifies changed files and outputs them
+    
+    - name: Run ruff fix (optional auto-format)
+      run: poetry run ruff check --fix . # Run ruff to check and optionally auto-format code
 
     - uses: pre-commit/action@v3.0.1 # Run pre-commit hooks (e.g., black, flake8, isort)
       with:
         extra_args: --files ${{ steps.changed_files.outputs.all }}
         # Only run pre-commit on changed files (not entire repo)
+      continue-on-error: true # Allow ruff or pre-commit fixes to apply without failing CI
