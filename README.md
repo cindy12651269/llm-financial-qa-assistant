@@ -283,4 +283,3 @@ Replace `<model>` with one of the supported model names.
     * [AnythingLLM](https://useanything.com/)
     * [FastServe - Serve Llama-cpp with FastAPI](https://github.com/aniketmaurya/fastserve)
     * [Alpaca](https://github.com/Jeffser/Alpaca?tab=readme-ov-file)
-

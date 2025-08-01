@@ -13,11 +13,8 @@ from helpers.log import get_logger
 logger = get_logger(__name__)
 
 # Set page config at the very beginning
-st.set_page_config(
-    page_title="Financial Chatbot",
-    page_icon="💰",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Financial Chatbot", page_icon="💰", initial_sidebar_state="collapsed")
+
 
 @st.cache_resource()
 def load_llm(model_name: str, model_folder: Path) -> LamaCppClient:
@@ -34,6 +31,7 @@ def init_chat_history(total_length: int = 2) -> ChatHistory:
     chat_history = ChatHistory(total_length=total_length)
     return chat_history
 
+
 def init_page(root_folder: Path) -> None:
     left_column, central_column, right_column = st.columns([2, 1, 2])
 
@@ -44,8 +42,7 @@ def init_page(root_folder: Path) -> None:
         # Replaced image with financial-themed AI bot
         st.image(str(root_folder / "images/finance-bot.png"), use_column_width="auto")
         st.markdown(
-            """<h4 style='text-align: center; color: grey;'>Your Financial Assistant</h4>""",
-            unsafe_allow_html=True
+            """<h4 style='text-align: center; color: grey;'>Your Financial Assistant</h4>""", unsafe_allow_html=True
         )
 
     with right_column:

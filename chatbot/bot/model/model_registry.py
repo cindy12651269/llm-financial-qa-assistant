@@ -3,7 +3,7 @@ from enum import Enum
 from bot.model.settings.llama import Llama32ThreeSettings
 from bot.model.settings.openchat import OpenChat36Settings
 from bot.model.settings.phi import Phi35Settings
-from bot.model.settings.qwen import Qwen25ThreeSettings, Qwen25ThreeMathReasoningSettings
+from bot.model.settings.qwen import Qwen25ThreeMathReasoningSettings, Qwen25ThreeSettings
 from bot.model.settings.starling import StarlingSettings
 
 
@@ -24,6 +24,7 @@ SUPPORTED_MODELS = {
     Model.QWEN_2_5_CODER_3B.value: Qwen25ThreeMathReasoningSettings,
     Model.STARLING_LM_7B_BETA.value: StarlingSettings,
 }
+
 
 def get_models():
     return list(SUPPORTED_MODELS.keys())

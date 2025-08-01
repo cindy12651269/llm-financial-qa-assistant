@@ -3,10 +3,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import requests
-from tqdm import tqdm
-from llama_cpp import CreateCompletionResponse, CreateCompletionStreamResponse, Llama
-
 from helpers.log import experimental
+from llama_cpp import CreateCompletionResponse, CreateCompletionStreamResponse, Llama
+from tqdm import tqdm
+
 from bot.client.prompt import (
     CTX_PROMPT_TEMPLATE,
     QA_PROMPT_TEMPLATE,
@@ -45,7 +45,7 @@ class LamaCppClient:
         Method to load the tokenizer.
         """
         raise NotImplementedError
-    
+
     def _auto_download(self) -> None:
         """
         Downloads a model file based on the provided name and saves it to the specified path.
@@ -243,9 +243,8 @@ class LamaCppClient:
             token = output["choices"][0]["text"]
             completion += token
             print(token, end="", flush=True)
-        return completion 
+        return completion
 
-    
     @staticmethod
     def parse_token(token):
         return token["choices"][0]["delta"].get("content", "")

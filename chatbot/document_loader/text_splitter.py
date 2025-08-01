@@ -37,7 +37,8 @@ logger = logging.getLogger(__name__)
 
 class TextSplitter(ABC):
     """
-    Interface for splitting text into chunks.
+    Abstract base class for splitting text into chunks.
+    Adapted for financial document parsing (e.g., 10-K, earnings reports).
     TextSplitter class has been extracted and refactored from LangChain's project.
     """
 
@@ -50,7 +51,7 @@ class TextSplitter(ABC):
         add_start_index: bool = False,
         strip_whitespace: bool = True,
     ) -> None:
-        """Create a new TextSplitter.
+        """Initialize the TextSplitter.
 
         Args:
             chunk_size: Maximum size of chunks to return.
@@ -64,7 +65,7 @@ class TextSplitter(ABC):
         """
         if chunk_overlap > chunk_size:
             raise ValueError(
-                f"Got a larger chunk overlap ({chunk_overlap}) than chunk size " f"({chunk_size}), should be smaller."
+                f"Got a larger chunk overlap ({chunk_overlap}) than chunk size " f"({chunk_size}), overlap must be smaller."
             )
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
@@ -75,10 +76,10 @@ class TextSplitter(ABC):
 
     @abstractmethod
     def split_text(self, text: str) -> list[str]:
-        """Split text into multiple components."""
+        """Split a single string into multiple chunks."""
 
     def create_documents(self, texts: list[str], metadatas: list[dict] | None = None) -> list[Document]:
-        """Create documents from a list of texts."""
+        """Wrap text chunks into Document objects with metadata."""
         _metadatas = metadatas or [{}] * len(texts)
         documents = []
         for i, text in enumerate(texts):
@@ -93,7 +94,7 @@ class TextSplitter(ABC):
         return documents
 
     def split_documents(self, documents: Iterable[Document]) -> list[Document]:
-        """Split documents."""
+        """Split a list of Document objects into smaller chunks."""
         texts, metadatas = [], []
         for doc in documents:
             texts.append(doc.page_content)
@@ -102,7 +103,7 @@ class TextSplitter(ABC):
 
     def _join_docs(self, docs: list[str], separator: str) -> str | None:
         """
-        Joins a list of document strings using the specified separator.
+        Join chunks using the specified separator and clean them.
 
         Args:
             docs (list[str]): The list of document strings to join.
@@ -120,8 +121,8 @@ class TextSplitter(ABC):
             return text
 
     def _merge_splits(self, splits: Iterable[str], separator: str) -> list[str]:
-        # We now want to combine these smaller pieces into medium size
-        # chunks to send to the LLM.
+        # Merge smaller splits into size-bounded and medium-sized chunks with overlap.
+        # to send to the LLM.
         separator_len = self._length_function(separator)
         docs, current_doc = [], []
         total = 0
@@ -155,10 +156,11 @@ class TextSplitter(ABC):
 
 class RecursiveCharacterTextSplitter(TextSplitter):
     """
-    Splitting text by recursively divides text based on a hierarchy of separators (e.g., paragraphs, sentences,
+    - Financial-aware recursive text splitter that prioritizes headers, line breaks,
+    and financial terms to produce coherent and semantically meaningful chunks.
+    - Splitting text by recursively divides text based on a hierarchy of separators (e.g., paragraphs, sentences,
     and words). This approach allows for more nuanced splitting, ensuring that chunks maintain semantic coherence.
-
-    RecursiveCharacterTextSplitter class has been extracted and refactored from LangChain's project.
+    - RecursiveCharacterTextSplitter class has been extracted and refactored from LangChain's project.
     """
 
     def __init__(
@@ -255,7 +257,7 @@ class RecursiveCharacterTextSplitter(TextSplitter):
             splits = list(text)
         return [s for s in splits if s != ""]
 
-
+# Uses financial-specific separators such as 'Revenue:', 'Net Income:' when format="markdown"
 def create_recursive_text_splitter(format: str, **kwargs: Any) -> RecursiveCharacterTextSplitter:
     """
     Factory function to create a RecursiveCharacterTextSplitter instance based on the specified format.

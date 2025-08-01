@@ -1,8 +1,9 @@
 import asyncio
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
 from chatbot.bot.client.lama_cpp_client import LamaCppClient
 from chatbot.bot.model.model_registry import Model, get_model_settings
 
@@ -34,10 +35,12 @@ def test_generate_answer(lamacpp_client):
     generated_answer = lamacpp_client.generate_answer(prompt, max_new_tokens=50)
     assert any(k in generated_answer.lower() for k in ["sharpe", "risk", "investment", "return"])
 
+
 def test_generate_stream_answer(lamacpp_client):
     prompt = "What does Alpha mean in investment?"
     generated_answer = lamacpp_client.stream_answer(prompt, max_new_tokens=50)
-    assert any (k in generated_answer.lower()for k in["alpha", "benchmark", "excess return"])
+    assert any(k in generated_answer.lower() for k in ["alpha", "benchmark", "excess return"])
+
 
 def test_start_answer_iterator_streamer(lamacpp_client):
     prompt = "What is Beta in portfolio theory?"
@@ -54,8 +57,11 @@ def test_parse_token(lamacpp_client):
     generated_answer = ""
     for output in stream:
         generated_answer += lamacpp_client.parse_token(output)
-    assert any("risk" in generated_answer.lower() and kw in generated_answer.lower()
-           for kw in ["return", "returns", "rate of return"])
+    assert any(
+        "risk" in generated_answer.lower() and kw in generated_answer.lower()
+        for kw in ["return", "returns", "rate of return"]
+    )
+
 
 @pytest.mark.asyncio
 async def test_async_generate_answer(lamacpp_client):
@@ -64,10 +70,13 @@ async def test_async_generate_answer(lamacpp_client):
     generated_answer = await asyncio.gather(task)
     output = generated_answer[0].lower()
 
-    print("Model Output:", output)  
+    print("Model Output:", output)
 
     expected_keywords = ["valuation", "expensive", "growth", "investor", "overvalued", "price"]
-    assert any(k in output for k in expected_keywords), f"Expected one of {expected_keywords} in answer, but got: {output}"
+    assert any(
+        k in output for k in expected_keywords
+    ), f"Expected one of {expected_keywords} in answer, but got: {output}"
+
 
 @pytest.mark.asyncio
 async def test_async_start_answer_iterator_streamer(lamacpp_client):
