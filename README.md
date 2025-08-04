@@ -174,10 +174,15 @@ python chatbot/memory_builder.py --chunk-size 1000 --chunk-overlap 50
 
 ## Run the Chatbot
 
-To interact with a GUI for conversation-only mode, use the following command and replace `<model>` with one of the options below:
+Use one of the following commands to launch the chatbot in conversation-only mode:
 
 ```bash
-streamlit run chatbot/chatbot_app.py -- --model <model> --max-new-tokens 1024
+streamlit run chatbot/chatbot_app.py -- --model llama-3.2:3b --max-new-tokens 1024
+streamlit run chatbot/chatbot_app.py -- --model openchat-3.6 --max-new-tokens 1024
+streamlit run chatbot/chatbot_app.py -- --model phi-3.5 --max-new-tokens 1024
+streamlit run chatbot/chatbot_app.py -- --model qwen-2.5:3b --max-new-tokens 1024
+streamlit run chatbot/chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --max-new-tokens 1024
+streamlit run chatbot/chatbot_app.py -- --model starling --max-new-tokens 1024
 ```
 
 ![conversation-aware-chatbot.gif](images/conversation-aware-chatbot.gif)
@@ -187,12 +192,43 @@ streamlit run chatbot/chatbot_app.py -- --model <model> --max-new-tokens 1024
 To interact with a GUI with document-based RAG capabilities, use:
 
 ```bash
-streamlit run chatbot/rag_chatbot_app.py -- --model <model> --k 2 --synthesis-strategy async-tree-summarization
+streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization
+streamlit run chatbot/rag_chatbot_app.py -- --model openchat-3.6 --k 2 --synthesis-strategy async-tree-summarization
+streamlit run chatbot/rag_chatbot_app.py -- --model phi-3.5 --k 2 --synthesis-strategy async-tree-summarization
+streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b --k 2 --synthesis-strategy async-tree-summarization
+streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --k 2 --synthesis-strategy async-tree-summarization
+streamlit run chatbot/rag_chatbot_app.py -- --model starling --k 2 --synthesis-strategy async-tree-summarization
 ```
 
-Replace `<model>` with one of the supported model names.
-
 ![rag_chatbot_example.gif](images%2Frag_chatbot_example.gif)
+
+
+## Example Questions
+
+Here are sample questions you can use to test the chatbot:
+
+### Retrieval-based Questions (via `memory_builder.py`)
+
+These questions trigger document-based retrieval using semantic similarity:
+
+- What was Tesla's EPS in Q4 2023?
+- Show me the financial results for Apple in 2023.
+- Summarize Microsoft’s latest earnings report.
+
+### Tool-Calling Questions (via `function_calling.py`)
+
+These questions trigger function tools such as `get_latest_stock_price`:
+
+- What is the latest price of AAPL?
+- Tell me TSLA stock price on NASDAQ.
+- Get the current price of GOOGL.
+
+### General Financial Questions (LLM-generated answers)
+
+These rely only on the model's language understanding:
+
+- How does revenue growth affect stock price?
+- What is EPS and why is it important?
 
 ## How to debug the Streamlit app on Pycharm
 

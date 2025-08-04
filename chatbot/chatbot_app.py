@@ -37,13 +37,22 @@ def init_page(root_folder: Path) -> None:
 
     with left_column:
         st.write(" ")
-
+    
+    # Replaced image with financial-themed AI bot
     with central_column:
-        # Replaced image with financial-themed AI bot
-        st.image(str(root_folder / "images/finance-bot.png"), use_column_width="auto")
-        st.markdown(
-            """<h4 style='text-align: center; color: grey;'>Your Financial Assistant</h4>""", unsafe_allow_html=True
-        )
+     # Display centered finance bot image
+     st.image(str(root_folder / "images" / "finance-bot.png"), width=120)
+
+     # Centered title and subtitle using HTML + inline style
+     st.markdown(
+         """
+         <div style='text-align: center; margin-top: 0.5em;'>
+             <span style='font-size: 28px; font-weight: bold;'>Your Financial Assistant</span><br/>
+             <span style='color: gray;'>Got a financial question? I’m here to help!</span>
+         </div>
+         """,
+         unsafe_allow_html=True,
+     )
 
     with right_column:
         st.write(" ")
