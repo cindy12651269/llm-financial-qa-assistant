@@ -4,10 +4,10 @@ import time
 from pathlib import Path
 
 import streamlit as st
-from bot.client.lama_cpp_client import LamaCppClient
-from bot.conversation.chat_history import ChatHistory
-from bot.conversation.conversation_handler import answer
-from bot.model.model_registry import get_model_settings, get_models
+from chatbot.bot.client.lama_cpp_client import LamaCppClient
+from chatbot.bot.conversation.chat_history import ChatHistory
+from chatbot.bot.conversation.conversation_handler import answer
+from chatbot.bot.model.model_registry import get_model_settings, get_models
 from helpers.log import get_logger
 
 logger = get_logger(__name__)

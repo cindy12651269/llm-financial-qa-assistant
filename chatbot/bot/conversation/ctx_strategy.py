@@ -6,7 +6,7 @@ import nest_asyncio
 from entities.document import Document
 from helpers.log import get_logger
 
-from bot.client.lama_cpp_client import LamaCppClient
+from chatbot.bot.client.lama_cpp_client import LamaCppClient
 
 logger = get_logger(__name__)
 nest_asyncio.apply()

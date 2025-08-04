@@ -1,4 +1,4 @@
-from bot.model.base_model import ModelSettings
+from chatbot.bot.model.base_model import ModelSettings
 
 
 class Phi35Settings(ModelSettings):

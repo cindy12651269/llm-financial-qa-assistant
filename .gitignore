@@ -169,3 +169,8 @@ cython_debug/
 # Local GGUF model files
 models/*.gguf
 models/.cache/
+.DS_Store
+chatbot/.DS_Store
+chatbot/experiments/.DS_Store
+vector_store/episodic_index/
+vector_store/exp_docs_index/

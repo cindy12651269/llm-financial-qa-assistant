@@ -1,50 +1,62 @@
 import json
 from pathlib import Path
 
-from bot.client.lama_cpp_client import LamaCppClient
-from bot.model.model_registry import get_model_settings
+from chatbot.bot.client.lama_cpp_client import LamaCppClient
+from chatbot.bot.model.model_registry import get_model_settings
 
-
-# Example dummy function hard coded to return the same weather
-# In production, this could be your backend API or an external API
-def get_current_weather(location: str, unit: str = "celsius") -> str:
+# Finance-specific tool 
+def get_latest_stock_price(ticker: str, market: str = "NASDAQ") -> str:
     """
-    Get the current weather in a given location.
+    Simulates a stock price lookup for a given company ticker.
 
-    location (str): The city and state, e.g. Madrid, Barcelona
-    unit (str): The unit. It can take two values; "celsius", "fahrenheit"
+    Args:
+        ticker (str): Company ticker symbol (e.g., AAPL, MSFT)
+        market (str): Exchange market (e.g., NASDAQ, NYSE)
+
+    Returns:
+        str: JSON string containing the simulated stock price data.
     """
-    if location.lower == "rome":
-        return json.dumps({"location": "Rome", "temperature": "22", "unit": "celsius"})
-    elif "san francisco" in location.lower():
-        return json.dumps({"location": "San Francisco", "temperature": "72", "unit": "fahrenheit"})
-    elif "madrid" in location.lower():
-        return json.dumps({"location": "Madrid", "temperature": "22", "unit": "celsius"})
-    else:
-        return json.dumps({"location": location, "temperature": "unknown"})
+    dummy_prices = {
+        "AAPL": 189.56,
+        "TSLA": 254.12,
+        "GOOGL": 139.22,
+        "MSFT": 343.20,
+    }
+    price = dummy_prices.get(ticker.upper(), "unknown")
+    return json.dumps({"ticker": ticker.upper(), "market": market, "price": price})
 
 
-def search_text(query: str, max_results: int = 5) -> list[dict[str, str]]:
+def search_financial_news(query: str, max_results: int = 3) -> list[dict[str, str]]:
     """
-    Conducts a search on DuckDuckGo and returns the top max_results results
+    Dummy search for financial news articles (simulated).
+
+    Args:
+        query (str): Financial search keyword.
+        max_results (int): Max number of results.
+
+    Returns:
+        list[dict]: List of simulated article metadata.
     """
-    return [{"title": "Adobe", "url": "www.adobe.com"}]
+    return [
+        {"title": f"{query} outlook strong in Q4", "url": "https://finance.example.com/q4-outlook"},
+        {"title": f"Analysts predict {query} rally", "url": "https://finance.example.com/rally"},
+    ]
 
 
-# Configuration object used to instruct functionary model about the tools at its disposal.
+# Function definitions passed to the LLM as tool metadata 
 TOOLS_CONFIG = [
     {
         "type": "function",
         "function": {
-            "name": "get_current_weather",
-            "description": "Get the current weather in a given location",
+            "name": "get_latest_stock_price",
+            "description": "Retrieve the latest simulated stock price for a company",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "location": {"type": "string", "description": "The city and state, e.g. San Francisco, CA"},
-                    "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+                    "ticker": {"type": "string", "description": "Stock ticker symbol, e.g. AAPL"},
+                    "market": {"type": "string", "enum": ["NASDAQ", "NYSE"]},
                 },
-                "required": ["location"],
+                "required": ["ticker"],
             },
         },
     }
@@ -52,7 +64,7 @@ TOOLS_CONFIG = [
 
 # Tool map - when functionary chooses a tool, run the corresponding function from this map
 TOOLS_MAP = {
-    "get_current_weather": get_current_weather,
+    "get_latest_stock_price": get_latest_stock_price,
 }
 
 if __name__ == "__main__":
@@ -60,24 +72,24 @@ if __name__ == "__main__":
     model_folder = root_folder / "models"
     Path(model_folder).parent.mkdir(parents=True, exist_ok=True)
 
-    print(get_current_weather(location="Madrid", unit="celsius"))
-    print(search_text(query="Adobe"))
+    print(get_latest_stock_price(ticker="AAPL", market="NASDAQ"))
+    print(search_financial_news(query="Tesla"))
 
-    model_settings = get_model_settings("llama-3.1-tool")
+    model_settings = get_model_settings("llama-3.2:3b")
 
     llm = LamaCppClient(model_folder, model_settings)
 
-    tools = llm.retrieve_tools(prompt="Tell me something about Rome", tools=TOOLS_CONFIG, tool_choice=None)
+    tools = llm.retrieve_tools(prompt="What is the latest price of AAPL?", tools=TOOLS_CONFIG, tool_choice=None)
     print(tools)
 
-    tools = llm.retrieve_tools(prompt="What's the current temperature in Rome, in Celsius?", tools=TOOLS_CONFIG)
+    tools = llm.retrieve_tools(prompt="What is the current price of TSLA stock?", tools=TOOLS_CONFIG)
     print(tools)
 
     tools = llm.retrieve_tools(
-        prompt="What's the current temperature in Madrid, in Celsius?",
+        prompt="Get me the latest stock price of AAPL.",
         max_new_tokens=256,
         tools=TOOLS_CONFIG,
-        tool_choice="get_current_weather",
+        tool_choice="get_latest_stock_price",
     )
     print(tools)
 
@@ -88,7 +100,7 @@ if __name__ == "__main__":
         function_response = func_to_call(**function_args)
         print(f"Tool response: {function_response}")
         prompt_with_function_response = llm.generate_ctx_prompt(
-            question="What's the current temperature in Madrid, in Celsius?", context=function_response
+            question="What is the latest price of AAPL?", context=function_response
         )
 
         stream = llm.start_answer_iterator_streamer(

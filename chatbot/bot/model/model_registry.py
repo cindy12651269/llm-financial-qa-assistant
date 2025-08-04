@@ -1,10 +1,10 @@
 from enum import Enum
 
-from bot.model.settings.llama import Llama32ThreeSettings
-from bot.model.settings.openchat import OpenChat36Settings
-from bot.model.settings.phi import Phi35Settings
-from bot.model.settings.qwen import Qwen25ThreeMathReasoningSettings, Qwen25ThreeSettings
-from bot.model.settings.starling import StarlingSettings
+from chatbot.bot.model.settings.llama import Llama32ThreeSettings
+from chatbot.bot.model.settings.openchat import OpenChat36Settings
+from chatbot.bot.model.settings.phi import Phi35Settings
+from chatbot.bot.model.settings.qwen import Qwen25ThreeMathReasoningSettings, Qwen25ThreeSettings
+from chatbot.bot.model.settings.starling import StarlingSettings
 
 
 class Model(Enum):

@@ -3,11 +3,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import requests
-from helpers.log import experimental
+from chatbot.helpers.log import experimental
 from llama_cpp import CreateCompletionResponse, CreateCompletionStreamResponse, Llama
 from tqdm import tqdm
 
-from bot.client.prompt import (
+from chatbot.bot.client.prompt import (
     CTX_PROMPT_TEMPLATE,
     QA_PROMPT_TEMPLATE,
     REFINED_ANSWER_CONVERSATION_AWARENESS_PROMPT_TEMPLATE,
@@ -20,7 +20,7 @@ from bot.client.prompt import (
     generate_qa_prompt,
     generate_refined_ctx_prompt,
 )
-from bot.model.base_model import ModelSettings
+from chatbot.bot.model.base_model import ModelSettings
 
 
 class LamaCppClient:

@@ -3,13 +3,13 @@ import sys
 import time
 from pathlib import Path
 
-from bot.client.lama_cpp_client import LamaCppClient
-from bot.conversation.chat_history import ChatHistory
-from bot.conversation.conversation_handler import answer_with_context, refine_question
-from bot.conversation.ctx_strategy import get_ctx_synthesis_strategies, get_ctx_synthesis_strategy
-from bot.memory.embedder import Embedder
-from bot.memory.vector_database.chroma import Chroma
-from bot.model.model_registry import Model, get_model_settings, get_models
+from chatbot.bot.client.lama_cpp_client import LamaCppClient
+from chatbot.bot.conversation.chat_history import ChatHistory
+from chatbot.bot.conversation.conversation_handler import answer_with_context, refine_question
+from chatbot.bot.conversation.ctx_strategy import get_ctx_synthesis_strategies, get_ctx_synthesis_strategy
+from chatbot.bot.memory.embedder import Embedder
+from chatbot.bot.memory.vector_database.chroma import Chroma
+from chatbot.bot.model.model_registry import Model, get_model_settings, get_models
 from helpers.log import get_logger
 from helpers.prettier import prettify_source
 from helpers.reader import read_input

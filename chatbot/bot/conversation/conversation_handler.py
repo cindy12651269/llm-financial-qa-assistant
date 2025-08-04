@@ -4,9 +4,9 @@ from typing import Any
 from entities.document import Document
 from helpers.log import get_logger
 
-from bot.client.lama_cpp_client import LamaCppClient
-from bot.conversation.chat_history import ChatHistory
-from bot.conversation.ctx_strategy import AsyncTreeSummarizationStrategy, BaseSynthesisStrategy
+from chatbot.bot.client.lama_cpp_client import LamaCppClient
+from chatbot.bot.conversation.chat_history import ChatHistory
+from chatbot.bot.conversation.ctx_strategy import AsyncTreeSummarizationStrategy, BaseSynthesisStrategy
 
 logger = get_logger(__name__)
 

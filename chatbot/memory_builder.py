@@ -2,8 +2,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from bot.memory.embedder import Embedder
-from bot.memory.vector_database.chroma import Chroma
+from chatbot.bot.memory.embedder import Embedder
+from chatbot.bot.memory.vector_database.chroma import Chroma
 from document_loader.format import Format
 from document_loader.loader import DirectoryLoader
 from document_loader.text_splitter import create_recursive_text_splitter
@@ -15,17 +15,17 @@ logger = get_logger(__name__)
 
 def load_documents(docs_path: Path) -> list[Document]:
     """
-    Loads Markdown documents from the specified path.
+    Loads financial Markdown documents from the specified path.
 
     Args:
-        docs_path (Path): The path to the documents.
+        docs_path (Path): The path to the documents (expects 'demo.md').
 
     Returns:
         List[Document]: A list of loaded documents.
     """
     loader = DirectoryLoader(
         path=docs_path,
-        glob="**/*.md",
+        glob="demo.md",  # Focused on a single financial demo file
         show_progress=True,
     )
     return loader.load()
@@ -33,15 +33,15 @@ def load_documents(docs_path: Path) -> list[Document]:
 
 def split_chunks(sources: list, chunk_size: int = 512, chunk_overlap: int = 25) -> list:
     """
-    Splits a list of sources into smaller chunks.
+    Splits a list of financial documents into smaller chunks.
 
     Args:
-        sources (List): The list of sources to be split into chunks.
-        chunk_size (int, optional): The maximum size of each chunk. Defaults to 512.
-        chunk_overlap (int, optional): The amount of overlap between consecutive chunks. Defaults to 0.
+        sources (List): The list of source documents.
+        chunk_size (int): Max size of each chunk.
+        chunk_overlap (int): Overlap between chunks to preserve context.
 
     Returns:
-        List: A list of smaller chunks obtained from the input sources.
+        List: Chunks of financial content.
     """
     chunks = []
     splitter = create_recursive_text_splitter(
@@ -53,6 +53,15 @@ def split_chunks(sources: list, chunk_size: int = 512, chunk_overlap: int = 25) 
 
 
 def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int, chunk_overlap: int):
+    """
+    Loads financial documents, splits them, embeds, and stores in vector DB.
+
+    Args:
+        docs_path (Path): Path to the source docs (e.g. 'docs/demo.md')
+        vector_store_path (str): Path to persist Chroma DB.
+        chunk_size (int): Chunk size for document splitting.
+        chunk_overlap (int): Overlap between chunks.
+    """
     logger.info(f"Loading documents from: {docs_path}")
     sources = load_documents(docs_path)
     logger.info(f"Number of loaded documents: {len(sources)}")
@@ -69,7 +78,13 @@ def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int,
 
 
 def get_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Memory Builder")
+    """
+    Parse CLI arguments for chunking.
+
+    Returns:
+        argparse.Namespace: Parsed command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Memory Builder for Financial Documents")
     parser.add_argument(
         "--chunk-size",
         type=int,
@@ -89,6 +104,9 @@ def get_args() -> argparse.Namespace:
 
 
 def main(parameters):
+    """
+    Main entry point: builds memory index from demo.md in /docs.
+    """
     root_folder = Path(__file__).resolve().parent.parent
     doc_path = root_folder / "docs"
     vector_store_path = root_folder / "vector_store" / "docs_index"

@@ -1,4 +1,4 @@
-from bot.model.base_model import ModelSettings
+from chatbot.bot.model.base_model import ModelSettings
 
 
 class Llama32ThreeSettings(ModelSettings):
