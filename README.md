@@ -219,9 +219,9 @@ These questions trigger document-based retrieval using semantic similarity:
 
 These questions trigger function tools such as `get_latest_stock_price`:
 
-- What is the latest price of AAPL?
+- What is the latest stock price of AAPL?
 - Tell me TSLA stock price on NASDAQ.
-- Get the current price of GOOGL.
+- Get the current stock price of GOOGLE.
 
 ### General Financial Questions (LLM-generated answers)
 

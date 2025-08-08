@@ -13,6 +13,26 @@ from chatbot.entities.document import Document
 
 logger = logging.getLogger(__name__)
 
+def _to_unit_interval(raw: float) -> float:
+    """
+    Map various similarities/distances to [0,1] where 1 = most relevant.
+    Heuristics:
+      - raw < 0            -> cosine similarity in [-1,1]  => (x+1)/2
+      - 0 <= raw <= 1      -> already normalized           => clamp
+      - 1 < raw <= 2       -> cosine distance in [0,2]     => 1 - x/2
+      - raw  > 2           -> L2 distance                  => 1/(1+x)
+    """
+    x = float(raw)
+    if x < 0:
+        y = (x + 1.0) / 2.0
+    elif 0.0 <= x <= 1.0:
+        y = x
+    elif x <= 2.0:
+        y = 1.0 - (min(x, 2.0) / 2.0)
+    else:
+        y = 1.0 / (1.0 + max(x, 0.0))
+    return max(0.0, min(1.0, y))
+
 
 class Chroma:
     """
@@ -52,6 +72,8 @@ class Chroma:
             embedding_function=None,  # Handle embeddings manually
             metadata=collection_metadata,
         )
+
+
 
     @property
     def embeddings(self) -> Embedder | None:
@@ -302,26 +324,40 @@ class Chroma:
         # `similarity_search_with_relevance_scores` return docs and relevance scores in the range [0, 1].
         # 0 is dissimilar, 1 is most similar.
         docs_and_scores = self.similarity_search_with_relevance_scores(query, k)
+        def _norm(x: float) -> float:
+            if x is None: return 0.0
+            if x <= 0.0: return 0.0
+            if x >= 1.0: return 1.0
+            return float(x)
+
+        docs_and_scores = [(doc, _norm(score)) for doc, score in docs_and_scores]
+        normalized: list[tuple[Document, float]] = []
+        for doc, raw in docs_and_scores:
+            if raw is None:
+                continue
+            score01 = _to_unit_interval(raw)
+            normalized.append((doc, score01))
 
         if threshold is not None:
-            docs_and_scores = [doc for doc in docs_and_scores if doc[1] > threshold]
-            if len(docs_and_scores) == 0:
-                logger.warning("No relevant docs were retrieved using the relevance score" f" threshold {threshold}")
+            normalized = [p for p in normalized if p[1] >= threshold]
+            if not normalized:
+                logger.warning("No relevant docs were retrieved using the relevance score threshold %s", threshold)
 
-            docs_and_scores = sorted(docs_and_scores, key=lambda x: x[1], reverse=True)
+        normalized.sort(key=lambda p: p[1], reverse=True)
 
-        retrieved_contents = [doc[0] for doc in docs_and_scores]
+        retrieved_contents = [doc for doc, _ in normalized]
         sources = []
-        for doc, score in docs_and_scores:
+        for doc, score in normalized:
             sources.append(
                 {
                     "score": round(score, 3),
                     "source": doc.metadata.get("source", "unknown"),
+                    "document": doc.metadata.get("document"),  # may be None
                     "organization": doc.metadata.get("organization", ""),
                     "fiscal_year": doc.metadata.get("fiscal_year", ""),
                     "report_type": doc.metadata.get("report_type", ""),
                     "sector": doc.metadata.get("sector", ""),
-                    "content_preview": f"{doc.page_content[0:256]}...",
+                    "content_preview": f"{doc.page_content[:256]}...",
                 }
             )
 
