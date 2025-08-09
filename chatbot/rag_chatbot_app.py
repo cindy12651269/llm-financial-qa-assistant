@@ -343,7 +343,7 @@ def main(parameters) -> None:
                     )
                     full_response += "🤖 Claude response:\n\n"
                     full_response += (claude_response or "No response.")
-                    message_placeholder.markdown(full_response)
+                    message_placeholder.write(full_response)
                     st.session_state.messages.append({"role": "assistant", "content": full_response})
                     return
 
@@ -352,8 +352,7 @@ def main(parameters) -> None:
                 message_placeholder.markdown(full_response)
                 for source in sources:
                     full_response += prettify_source(source) + "\n\n"
-                    message_placeholder.markdown(full_response)
-
+                    message_placeholder.write(full_response)
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
 
         # Step 2: Stream financial analysis response

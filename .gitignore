@@ -174,3 +174,11 @@ chatbot/.DS_Store
 chatbot/experiments/.DS_Store
 vector_store/episodic_index/
 vector_store/exp_docs_index/
+vector_store/
+models/
+.env
+*.gguf
+*.sqlite3
+*.bin
+__pycache__/
+
