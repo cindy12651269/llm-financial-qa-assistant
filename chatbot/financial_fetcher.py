@@ -139,16 +139,15 @@ def get_cik_from_ticker(ticker: str) -> Optional[str]:
             return None
         symbol = ticker.strip().upper()
 
-        # Return from cache if present
         if symbol in _CIK_CACHE:
             return _CIK_CACHE[symbol]
 
         url = "https://www.sec.gov/files/company_tickers.json"
+        # Ensure you have a global `headers` with a proper User-Agent registered to the SEC guidelines
         resp = requests.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
         data = resp.json()
 
-        # The JSON is an object with numeric keys ("0","1",...) -> {ticker, title, cik_str}
         for entry in data.values():
             if entry.get("ticker", "").upper() == symbol:
                 cik = str(entry.get("cik_str", "")).zfill(10)
@@ -168,13 +167,11 @@ def get_financial_metric(
     """
     Fetch a financial metric (EPS, revenue, net income, operating income, etc.) from SEC EDGAR XBRL 'companyfacts'.
 
-    Implementation details:
     - Uses https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json
     - Maps friendly metric names to US GAAP taxonomy keys.
-    - For EPS uses units 'USD/shares'; for other monetaries uses 'USD'.
+    - EPS uses 'USD/shares'; others use 'USD'.
     - Filters by fiscal year (fy == year) and fiscal period (fp == 'Q{n}' or 'FY').
-    - Prefers values from 10-Q (for quarters) or 10-K (for FY) when available.
-    - Returns the latest matching fact by 'end' date if multiple facts exist.
+    - Prefers 10-Q for quarters and 10-K for FY.
     """
     try:
         cik = get_cik_from_ticker(ticker)
@@ -182,85 +179,55 @@ def get_financial_metric(
             logger.warning(f"CIK not found for {ticker}")
             return None
 
-        # Map friendly metric names to US-GAAP fact keys
         gaap_map = {
             "eps": "EarningsPerShareDiluted",
             "revenue": "Revenues",
             "net_income": "NetIncomeLoss",
             "operating_income": "OperatingIncomeLoss",
-            # Note: "operating_margin" is not a raw GAAP fact; you'd compute it as OperatingIncomeLoss / Revenues.
-            # If you still want to expose it, handle it separately by fetching both and dividing.
         }
-
-        key = gaap_map.get(metric.lower())
+        key = gaap_map.get((metric or "").lower())
         if not key:
             logger.warning(f"Unsupported metric: {metric}")
             return None
 
         facts_url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-        resp = requests.get(facts_url, headers=headers, timeout=30)
+        resp = requests.get(facts_url, headers=headers, timeout=30)  # headers must include proper UA
         resp.raise_for_status()
         facts = resp.json().get("facts", {})
-
         us_gaap = facts.get("us-gaap", {})
         if key not in us_gaap:
             logger.warning(f"US-GAAP key not found for {ticker}: {key}")
             return None
 
-        # Decide preferred unit by metric
-        preferred_units = []
-        if key == "EarningsPerShareDiluted":
-            preferred_units = ["USD/shares"]
-        else:
-            preferred_units = ["USD"]
-
+        preferred_units = ["USD/shares"] if key == "EarningsPerShareDiluted" else ["USD"]
         units_dict = us_gaap[key].get("units", {})
-        # Pick the first matching preferred unit available; otherwise fallback to any unit present
-        chosen_unit = next((u for u in preferred_units if u in units_dict), None)
+        chosen_unit = next((u for u in preferred_units if u in units_dict), None) or (next(iter(units_dict.keys())) if units_dict else None)
         if not chosen_unit:
-            if not units_dict:
-                logger.warning(f"No units for {key} on {ticker}")
-                return None
-            # Fallback to any unit
-            chosen_unit = next(iter(units_dict.keys()))
+            logger.warning(f"No units for {key} on {ticker}")
+            return None
 
-        observations = units_dict.get(chosen_unit, [])
+        observations = units_dict.get(chosen_unit, []) or []
         if not observations:
             logger.warning(f"No observations for {key} with unit {chosen_unit} on {ticker}")
             return None
 
-        # Filter by fiscal year and (optionally) quarter
-        # XBRL fields of interest: 'fy' (fiscal year), 'fp' (Q1/Q2/Q3/Q4/FY), 'form' (10-K/10-Q), 'end' (period end)
         target_fp = f"Q{quarter}" if quarter else "FY"
-
-        # Prefer facts that match both fy and fp; if none, relax fp (some issuers report Q4 in 10-K with 'FY')
-        matches = [
-            v for v in observations
-            if v.get("fy") == year and v.get("fp") == target_fp
-        ]
+        matches = [v for v in observations if v.get("fy") == year and v.get("fp") == target_fp]
 
         if not matches and quarter:
-            # Some filers use 'Q4' in 10-K context inconsistently; try accepting 'FY' for Q4 if exact Q4 missing
-            matches = [
-                v for v in observations
-                if v.get("fy") == year and v.get("fp") in (f"Q{quarter}", "FY")
-            ]
+            # Q4 sometimes lives under FY in 10-K
+            matches = [v for v in observations if v.get("fy") == year and v.get("fp") in (f"Q{quarter}", "FY")]
         elif not matches and not quarter:
-            # Annual case: accept anything with fy == year (any fp), will rank by form/end below
             matches = [v for v in observations if v.get("fy") == year]
 
         if not matches:
             logger.warning(f"No facts matched year/period for {ticker} {key} {year} q={quarter}")
             return None
 
-        # Rank: prefer correct form (10-Q for quarter, 10-K for FY), then latest by 'end' date
         preferred_form = "10-Q" if quarter else "10-K"
-
         def score(item: Dict[str, Any]) -> tuple:
             form_ok = 1 if item.get("form") == preferred_form else 0
-            # 'end' is YYYY-MM-DD; use as string for max since lexicographic matches ISO date order
-            end_date = item.get("end", "")
-            return (form_ok, end_date)
+            return (form_ok, item.get("end", ""))  # ISO string is OK to compare lexicographically
 
         best = max(matches, key=score)
         value = best.get("val")
@@ -283,23 +250,59 @@ def get_financial_metric(
         logger.error(f"EDGAR metric fetch error: {e}")
         return None
 
+
 # CLI test (for local testing)
 if __name__ == "__main__":
     print("--- Yahoo Finance ---")
-    print(get_stock_price_yahoo("AAPL"))
+    try:
+        print(get_stock_price_yahoo("AAPL"))
+    except Exception as e:
+        print(f"[Yahoo Finance error] {e}")
 
     print("--- Alpha Vantage ---")
-    print(get_stock_price_alpha_vantage("AAPL"))
+    try:
+        print(get_stock_price_alpha_vantage("AAPL"))
+    except Exception as e:
+        print(f"[Alpha Vantage error] {e}")
 
     print("--- Unified Stock Price ---")
-    print(get_stock_price("AAPL"))
+    try:
+        print(get_stock_price("AAPL"))
+    except Exception as e:
+        print(f"[Unified price error] {e}")
 
-    print("--- Financial News ---")
-    news = get_financial_news("Apple earnings")
-    for item in news:
-        print(f"- {item['title']} ({item['url']})")
+    print("--- Financial News (Apple sample) ---")
+    try:
+        news_items = get_financial_news("Apple earnings")
+        if news_items:
+            for item in news_items[:3]:
+                print(f"- {item.get('title','(no title)')} ({item.get('url','')})")
+        else:
+            print("No news returned.")
+    except Exception as e:
+        print(f"[News API error] {e}")
 
-    print("--- SEC Financial Metric ---")
-    print(get_financial_metric("TSLA", 2023, metric="eps", quarter=4))
+    print("--- SEC Financial Metric (TSLA EPS Q4 2023) ---")
+    try:
+        print(get_financial_metric("TSLA", 2023, metric="eps", quarter=4))
+    except Exception as e:
+        print(f"[SEC metric error] {e}")
 
+    print("--- SEC Financial Metric (NVDA Revenue FY2024 Q4) ---")
+    # NVDA fiscal calendar differs from calendar year; this checks our SEC path.
+    try:
+        print(get_financial_metric("NVDA", 2024, metric="revenue", quarter=4))
+    except Exception as e:
+        print(f"[SEC NVDA revenue error] {e}")
 
+    print("--- Financial News (MSFT top 3 headlines) ---")
+    # Using a simple query string. Adjust if your function supports ticker-based search.
+    try:
+        msft_news = get_financial_news("MSFT earnings")
+        if msft_news:
+            for item in msft_news[:3]:
+                print(f"- {item.get('title','(no title)')} ({item.get('url','')})")
+        else:
+            print("No MSFT news returned.")
+    except Exception as e:
+        print(f"[News API MSFT error] {e}")

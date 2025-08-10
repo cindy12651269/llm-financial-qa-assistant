@@ -295,6 +295,7 @@ class Chroma:
         query: str,
         k: int = 4,
         threshold: float | None = 0.2,
+        exclude_tools: bool = True,  # NEW: default to exclude tool-injected docs from RAG
     ) -> tuple[list[Document], list[dict[str, Any]]]:
         """
         Perform a semantic similarity search using financial context,
@@ -324,6 +325,7 @@ class Chroma:
         # `similarity_search_with_relevance_scores` return docs and relevance scores in the range [0, 1].
         # 0 is dissimilar, 1 is most similar.
         docs_and_scores = self.similarity_search_with_relevance_scores(query, k)
+        
         def _norm(x: float) -> float:
             if x is None: return 0.0
             if x <= 0.0: return 0.0
@@ -331,28 +333,36 @@ class Chroma:
             return float(x)
 
         docs_and_scores = [(doc, _norm(score)) for doc, score in docs_and_scores]
+
         normalized: list[tuple[Document, float]] = []
         for doc, raw in docs_and_scores:
             if raw is None:
                 continue
             score01 = _to_unit_interval(raw)
+            # NEW: skip tool docs if requested
+            if exclude_tools and str(doc.metadata.get("source_type", "")).lower() == "tool":
+                continue
             normalized.append((doc, score01))
 
         if threshold is not None:
+            # keep only results with score >= threshold
             normalized = [p for p in normalized if p[1] >= threshold]
             if not normalized:
-                logger.warning("No relevant docs were retrieved using the relevance score threshold %s", threshold)
+                logger.warning(
+                    "No relevant docs were retrieved using the relevance score threshold %s",
+                    threshold,
+                )
 
         normalized.sort(key=lambda p: p[1], reverse=True)
 
         retrieved_contents = [doc for doc, _ in normalized]
-        sources = []
+        sources: list[dict[str, Any]] = []
         for doc, score in normalized:
             sources.append(
                 {
                     "score": round(score, 3),
                     "source": doc.metadata.get("source", "unknown"),
-                    "document": doc.metadata.get("document"),  # may be None
+                    "document": doc.metadata.get("document"),
                     "organization": doc.metadata.get("organization", ""),
                     "fiscal_year": doc.metadata.get("fiscal_year", ""),
                     "report_type": doc.metadata.get("report_type", ""),

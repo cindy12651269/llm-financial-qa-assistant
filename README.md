@@ -177,12 +177,12 @@ python chatbot/memory_builder.py --chunk-size 1000 --chunk-overlap 50
 Use one of the following commands to launch the chatbot in conversation-only mode:
 
 ```bash
-streamlit run chatbot/chatbot_app.py -- --model llama-3.2:3b --max-new-tokens 1024
-streamlit run chatbot/chatbot_app.py -- --model openchat-3.6 --max-new-tokens 1024
-streamlit run chatbot/chatbot_app.py -- --model phi-3.5 --max-new-tokens 1024
-streamlit run chatbot/chatbot_app.py -- --model qwen-2.5:3b --max-new-tokens 1024
-streamlit run chatbot/chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --max-new-tokens 1024
-streamlit run chatbot/chatbot_app.py -- --model starling --max-new-tokens 1024
+streamlit run chatbot/chatbot_app.py -- --model llama-3.2:3b --max-new-tokens 512
+streamlit run chatbot/chatbot_app.py -- --model openchat-3.6 --max-new-tokens 512
+streamlit run chatbot/chatbot_app.py -- --model phi-3.5 --max-new-tokens 512
+streamlit run chatbot/chatbot_app.py -- --model qwen-2.5:3b --max-new-tokens 512
+streamlit run chatbot/chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --max-new-tokens 512
+streamlit run chatbot/chatbot_app.py -- --model starling --max-new-tokens 512
 ```
 
 ![conversation-aware-chatbot.gif](images/conversation-aware-chatbot.gif)
@@ -205,30 +205,57 @@ streamlit run chatbot/rag_chatbot_app.py -- --model starling --k 2 --synthesis-s
 
 ## Example Questions
 
-Here are sample questions you can use to test the chatbot:
+> Routing order: **Tools → RAG → Claude (LLM fallback)**
+> The assistant calls Claude **only** when both Tools and RAG return no usable result.
 
-### Retrieval-based Questions (via `memory_builder.py`)
+### ✅ Tool-based (API) — verified with CLI
 
-These questions trigger document-based retrieval using semantic similarity:
+These questions are directly answered from `financial_fetcher` API calls.
+Run locally to verify:
 
-- What was Tesla's EPS in Q4 2023?
-- Show me the financial results for Apple in 2023.
-- Summarize Microsoft’s latest earnings report.
+```bash
+python chatbot/financial_fetcher.py
+```
 
-### Tool-Calling Questions (via `function_calling.py`)
+You should see matching outputs for these examples:
 
-These questions trigger function tools such as `get_latest_stock_price`:
+| #   | Example Question                                             | Expected Source               | CLI Example Output                                                                 |
+| --- | ------------------------------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | **AAPL** — *What is the latest stock price of AAPL?*         | Yahoo Finance / Alpha Vantage | `{'ticker': 'AAPL', 'price': 229.35, 'source': ...}`                               |
+| 2   | **TSLA** — *What was Tesla’s GAAP EPS in Q4 2023?*            | SEC EDGAR companyfacts (Fiscal) | `{'ticker': 'TSLA', 'metric': 'eps', 'value': 4.3, ...}`                           |
+| 3-1 | **NVDA** — *Show me revenue for FY2024 Q4 for NVDA.*         | SEC EDGAR companyfacts        | `{'ticker': 'NVDA', 'metric': 'revenue', 'value': 60922000000, 'year': 2024, 'quarter': 4, 'basis': 'FY', ...}` |
+| 3-2 | **NVDA** — *Show me revenue for CY2024 Q4 for NVDA.*         | SEC EDGAR companyfacts        | `{'ticker': 'NVDA', 'metric': 'revenue', 'value': 60922000000, 'year': 2024, 'quarter': 4, 'basis': 'CY', 'note': 'requested calendar year/quarter; backend may map to fiscal periods', ...}` |
+| 4   | **MSFT** — *Latest headlines for MSFT (top 3).*              | NewsAPI                       | Three recent MSFT headlines with URLs                                              |
 
-- What is the latest stock price of AAPL?
-- Tell me TSLA stock price on NASDAQ.
-- Get the current stock price of GOOGLE.
+> **Note:** CY (Calendar Year) queries are supported and recorded in the payload/metadata as `basis="CY"`, along with `calendar_year` and `calendar_quarter` fields.  
+> Currently, CY values are resolved using the same FY data from SEC EDGAR and may represent mapped fiscal periods depending on the company's reporting calendar.
 
-### General Financial Questions (LLM-generated answers)
 
-These rely only on the model's language understanding:
+### 📄 Retrieval-based (RAG) — document citations
 
-- How does revenue growth affect stock price?
-- What is EPS and why is it important?
+Questions answered from indexed filings, IR materials, press releases, or investor slides:
+
+* *Explain why **AAPL** EPS changed in **FY2023 Q4** (quote sources).*
+* *Summarize **Microsoft’s latest earnings call** highlights with citations.*
+* *Compare **TSLA** automotive gross margin between **2022** and **2023**, with sources.*
+
+---
+
+### 💬 General (LLM) — concept or theory only
+
+No API calls or document retrieval; purely language model reasoning:
+
+* *What is EPS and why is it important?*
+* *How can revenue growth affect stock price?*
+* *What’s the difference between GAAP and non-GAAP EPS?*
+
+---
+
+### 🔍 Smoke tests
+
+1. *AAPL latest price* → **Tools**
+2. *TSLA Q4 2023 EPS* → **Tools**
+3. *Explain “market gravity”* → **Claude** (if no document/tool hit)
 
 ## How to debug the Streamlit app on Pycharm
 

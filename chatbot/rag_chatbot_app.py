@@ -142,8 +142,10 @@ def resolve_ticker_from_query(query: str) -> str | None:
 
 def fallback_stock_lookup(query: str) -> List[Document]:
     """
-    Attempts to fetch stock price via financial_fetcher.get_stock_price, only if the
-    query actually looks like a stock price question, and only for validated tickers.
+    Fetch latest stock price via financial_fetcher.get_stock_price
+    only if the query looks like a price question and ticker is resolvable.
+
+    Adds metadata.source_type="tool" and a structured payload for API fast-path.
     """
     if not re.search(r'\b(price|stock|share|quote|trading|last|close)\b', query, re.I):
         return []
@@ -152,54 +154,150 @@ def fallback_stock_lookup(query: str) -> List[Document]:
     if not ticker:
         return []
 
-    data = get_stock_price(ticker)
+    data = get_stock_price(ticker)  # expected: {ticker, price(or value), as_of, source}
     if not data:
         return []
+
+    # Normalize value key and ensure it's present
+    value = data.get("value", data.get("price"))
+    if value is None:
+        return []
+
+    payload = {
+        "kind": "price",
+        "ticker": data.get("ticker", ticker),
+        "value": value,
+        "as_of": data.get("as_of"),
+        "source": data.get("source", "financial_fetcher"),
+        "raw": data,  # keep full raw for debugging
+    }
 
     return [Document(
         page_content=json.dumps(data),
         metadata={
             "source": "financial_fetcher",
+            "source_type": "tool",   # required for API fast-path
             "organization": data.get("ticker", ticker),
-            "document": "tool:get_stock_price",
+            "report_type": "API",
+            "payload": payload,      # fast-path reads this
         }
     )]
 
 def fallback_news_lookup(query: str) -> List[Document]:
     """
-    Fetch latest financial news for a resolved ticker if possible; otherwise fallback to the raw query.
+    Fetch latest financial news for a resolved ticker if possible; otherwise use the raw query term.
+
+    Adds metadata.source_type="tool" and a structured payload (kind="news", items=[...]).
     """
+    if not re.search(r"\b(news|headline|headlines|latest news|top news)\b", query, re.I):
+        return []  
     ticker = resolve_ticker_from_query(query)
     term = ticker if ticker else query
-    items = get_financial_news(term)
+
+    items = get_financial_news(term)  # list of dicts: {title, url, published_at, source?}
     if not items:
         return []
+
+    # Try to propagate the true source if present on items; else default label
+    news_source = None
+    for it in items:
+        if isinstance(it, dict) and it.get("source"):
+            news_source = it["source"]
+            break
+    news_source = news_source or "financial_fetcher"
+
+    payload = {
+        "kind": "news",
+        "items": items[:20],          # cap to a reasonable count
+        "source": news_source,
+        "query": term,
+    }
+
     return [Document(
-        page_content=json.dumps(item),
-        metadata={"source": "financial_fetcher", "document": "tool:get_financial_news"}
-    ) for item in items]
+        page_content=json.dumps({"items": items}),
+        metadata={
+            "source": "financial_fetcher",
+            "source_type": "tool",    # required for API fast-path
+            "organization": ticker or "",
+            "report_type": "API",
+            "payload": payload,       # fast-path reads this
+        }
+    )]
+
 
 def fallback_financial_metric_lookup(query: str) -> List[Document]:
     """
-    Fetch a specific financial metric (EPS, revenue, net income, operating income/margin)
-    via financial_fetcher.get_financial_metric, using a safe resolver and strict intent checks.
+    Simple metric resolver for Tools fast-path.
+    Supports FY/CY/bare year-quarter patterns; backend still queried on fiscal (FY) data.
     """
-    # Must look like a metric question
     if not re.search(r"\b(eps|earnings per share|revenue|net income|operating (income|margin))\b", query, re.I):
         return []
 
-    ym = re.search(r"\b(20\d{2})\b", query)
-    if not ym:
+    text = query.strip()
+    upper = text.upper()
+
+    # --- Parse year & quarter and decide basis ---
+    basis = "FY"          # default FY unless we clearly see CY or bare-year-quarter
+    year = quarter = None
+    cal_year = cal_quarter = None
+
+    # FY2024 Q4 / Q4 FY2024
+    m = re.search(r"\bFY\s*(\d{2,4})\s*Q([1-4])\b", upper) or re.search(r"\bQ([1-4])\s*FY\s*(\d{2,4})\b", upper)
+    if m:
+        if m.re.pattern.startswith(r"\bFY"):
+            y_raw, q_raw = m.group(1), m.group(2)
+        else:
+            q_raw, y_raw = m.group(1), m.group(2)
+        y = int(y_raw)
+        year = (2000 + y) if y < 100 else y
+        quarter = int(q_raw)
+        basis = "FY"
+    else:
+        # CY2024 Q4 / Q4 CY2024
+        m = re.search(r"\bCY\s*(\d{2,4})\s*Q([1-4])\b", upper) or re.search(r"\bQ([1-4])\s*CY\s*(\d{2,4})\b", upper)
+        if m:
+            if m.re.pattern.startswith(r"\bCY"):
+                y_raw, q_raw = m.group(1), m.group(2)
+            else:
+                q_raw, y_raw = m.group(1), m.group(2)
+            y = int(y_raw)
+            year = (2000 + y) if y < 100 else y
+            quarter = int(q_raw)
+            basis = "CY"
+            cal_year, cal_quarter = year, quarter
+        else:
+            # bare "2024 Q4" / "Q4 2024" → treat as CY
+            m = re.search(r"\b(20\d{2})\s*Q([1-4])\b", upper) or re.search(r"\bQ([1-4])\s*(20\d{2})\b", upper)
+            if m:
+                if m.re.pattern.startswith(r"\b(20"):
+                    y_raw, q_raw = m.group(1), m.group(2)
+                else:
+                    q_raw, y_raw = m.group(1), m.group(2)
+                year = int(y_raw)
+                quarter = int(q_raw)
+                basis = "CY"
+                cal_year, cal_quarter = year, quarter
+            else:
+                # just a year → default FY
+                y = re.search(r"\b(20\d{2})\b", upper)
+                year = int(y.group(1)) if y else None
+                quarter = None
+                # basis remains FY
+
+    if not year:
         return []
-    year = int(ym.group(1))
 
-    qm = re.search(r"\bQ([1-4])\b", query, re.I)
-    quarter = int(qm.group(1)) if qm else None
-
-    ticker = resolve_ticker_from_query(query)
+    # --- Resolve ticker (sanitize keywords to avoid false positives like GAAP) ---
+    query_for_ticker = re.sub(
+        r"(?i)\b(NON[-\s]?GAAP|GAAP|EPS|EARNINGS|FISCAL|CALENDAR|FY|CY|Q[1-4]|REVENUE|NET\s+INCOME|OPERATING\s+(INCOME|MARGIN))\b",
+        " ",
+        text,
+    )
+    ticker = resolve_ticker_from_query(query_for_ticker)
     if not ticker:
         return []
 
+    # --- Map metric keyword ---
     metric = None
     for kw, key in {
         "earnings per share": "eps",
@@ -209,26 +307,56 @@ def fallback_financial_metric_lookup(query: str) -> List[Document]:
         "operating income": "operating_income",
         "operating margin": "operating_margin",
     }.items():
-        if kw in query.lower():
+        if re.search(rf"\b{re.escape(kw)}\b", text, re.I):
             metric = key
             break
     if not metric:
         return []
 
+    # --- Fetch (FY-based backend) ---
     data = get_financial_metric(ticker, year, metric, quarter)
     if not data:
         return []
 
-    return [Document(
-        page_content=json.dumps(data),
-        metadata={
-            "source": "financial_fetcher",
-            "organization": ticker,
-            "document": f"tool:get_{metric}",
-            "fiscal_year": str(year),
-            "report_type": ("10-Q" if quarter else "10-K"),
-        }
-    )]
+    # If backend returns no quarter but user asked a quarter (common for Q4 in 10-K), show requested one
+    effective_quarter = data.get("quarter", quarter)
+
+    note = ""
+    if basis == "CY":
+        note = "requested calendar period; answered from fiscal data (SEC companyfacts)"
+
+    payload = {
+        "kind": "metric",
+        "basis": basis,                         # <-- CRUCIAL: CY or FY
+        "ticker": data.get("ticker", ticker),
+        "metric": data.get("metric", metric),
+        "value": data.get("value"),
+        "year": data.get("year", year),
+        "quarter": effective_quarter,
+        "as_of": data.get("as_of"),
+        "source": data.get("source"),
+        "raw": data,
+        "calendar_year": cal_year,
+        "calendar_quarter": cal_quarter,
+        "note": note,
+    }
+
+    meta = {
+        "source": "financial_fetcher",
+        "source_type": "tool",
+        "organization": ticker,
+        "fiscal_year": str(year),
+        "report_type": "API",
+        "payload": payload,
+        "fiscal_basis": basis,
+    }
+    if effective_quarter:
+        meta["fiscal_quarter"] = f"Q{effective_quarter}"
+    if basis == "CY":
+        if cal_year: meta["calendar_year"] = str(cal_year)
+        if cal_quarter: meta["calendar_quarter"] = f"Q{cal_quarter}"
+
+    return [Document(page_content=json.dumps(data), metadata=meta)]
 
 # Initialize UI branding for financial assistant
 def init_page(root_folder: Path) -> None:
@@ -312,48 +440,119 @@ def main(parameters) -> None:
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
+            retrieved_contents = []
+            sources = []
+            # optional: simple routing flag for debugging
+            route = "INIT"
+
             with st.spinner(
                 text="📊 Refining your financial query and retrieving relevant documents– hang tight! "
                      "This should take seconds."
             ):
                 refined_user_input = refine_question(llm, user_input, chat_history=chat_history)
-
-                # 1) RAG
-                retrieved_contents, sources = index.similarity_search_with_threshold(
-                    query=refined_user_input, k=parameters.k
-                )
-
-                # 2) Tools (stock -> metric -> news)
+                # 1) Tools (stock -> metric -> news) — API first, binary routing
                 if not retrieved_contents:
-                    fallback_docs = []
                     for tool in [fallback_stock_lookup, fallback_financial_metric_lookup, fallback_news_lookup]:
                         fallback_docs = tool(refined_user_input)
-                        if fallback_docs:
-                            index.from_chunks(fallback_docs)
-                            retrieved_contents, sources = index.similarity_search_with_threshold(
-                                query=refined_user_input, k=parameters.k
-                            )
-                            break
+                        if not fallback_docs:
+                            continue
 
-                # 3) Claude fallback — moved OUT of the loop
+                        # Fast-path: scan all docs for a usable tool payload; answer & return
+                        for d in fallback_docs:
+                            md = getattr(d, "metadata", {}) or {}
+                            if str(md.get("source_type", "")).lower() != "tool":
+                                continue
+                            payload = md.get("payload") or {}
+                            kind = payload.get("kind")
+
+                            # price
+                            if kind == "price" and payload.get("ticker") and payload.get("value") is not None:
+                                t, v, asof = payload["ticker"], payload["value"], payload.get("as_of", "")
+                                src = payload.get("source", "financial_fetcher")
+                                route = "TOOLS"
+                                message_placeholder.markdown(
+                                    f"**Route:** {route}\n\n"
+                                    f"**{t}** latest price: **{v}** (as of {asof})\n\n"
+                                    f"_Source: {src}_"
+                                )
+                                st.session_state.messages.append({"role": "assistant", "content": f"{t} latest price: {v} (src: {src})"})
+                                st.session_state.last_route = route
+                                return
+
+                            # metric (EPS / revenue / etc.)
+                            if kind == "metric" and payload.get("ticker") and payload.get("metric") and payload.get("value") is not None:
+                                t, m, val = payload["ticker"], payload["metric"], payload["value"]
+                                y, q, asof = payload.get("year"), payload.get("quarter"), payload.get("as_of", "")
+                                basis = payload.get("basis", "FY")
+                                cal_y = payload.get("calendar_year")
+                                cal_q = payload.get("calendar_quarter")
+                                note = payload.get("note")
+                                qtxt = f" Q{q}" if q else ""
+                                src = payload.get("source", "financial_fetcher")
+                                route = "TOOLS"
+
+                                # Compose an informative header that shows the basis clearly
+                                header = f"**{t} {m} {y or ''}{qtxt}: {val}** (as of {asof})  \n"
+                                header += f"_Basis: **{basis}**_"
+                                if basis == "CY" and (cal_y or cal_q):
+                                    header += f" — Calendar: **{cal_y or ''}{' Q'+str(cal_q) if cal_q else ''}**"
+                                if note:
+                                    header += f"  \n_Note: {note}_"
+
+                                message_placeholder.markdown(f"**Route:** {route}\n\n{header}\n\n_Source: {src}_")
+                                st.session_state.last_route = route
+                                return
+
+
+                            # news
+                            if kind == "news" and (items := payload.get("items")):
+                                src = payload.get("source", "financial_fetcher")
+                                top = items[:3]
+                                lines = [f"- {it.get('title','(untitled)')} <{it.get('url','')}>" for it in top]
+                                route = "TOOLS"
+                                message_placeholder.markdown(
+                                    f"**Route:** {route}\n\n"
+                                    f"**Latest headlines:**\n" + "\n".join(lines) + f"\n\n_Source: {src}_"
+                                )
+                                st.session_state.messages.append({"role": "assistant", "content": "Latest headlines shown (Tools)."})
+                                st.session_state.last_route = route
+                                return
+
+                        # No fast-path payload from this tool → try next tool (do NOT inject; keep binary clean)
+                        # (do nothing here; loop continues to next tool)
+
+                # 2) RAG — only if API could not answer
                 if not retrieved_contents:
-                    claude_response = call_claude_fallback(
-                        refined_user_input,
-                        model="anthropic/claude-3.7-sonnet"
+                    retrieved_contents, sources = index.similarity_search_with_threshold(
+                        query=refined_user_input, k=parameters.k, exclude_tools=True  # ensure tool docs are hidden in RAG list
                     )
-                    full_response += "🤖 Claude response:\n\n"
-                    full_response += (claude_response or "No response.")
-                    message_placeholder.write(full_response)
-                    st.session_state.messages.append({"role": "assistant", "content": full_response})
-                    return
-
-                # 4) Show sources preview
-                full_response += "📚 Relevant financial excerpts:\n\n"
-                message_placeholder.markdown(full_response)
-                for source in sources:
-                    full_response += prettify_source(source) + "\n\n"
-                    message_placeholder.write(full_response)
-                st.session_state.messages.append({"role": "assistant", "content": full_response})
+                    if not retrieved_contents:
+                        # 3) Claude fallback — only when both Tools and RAG failed
+                        route = "CLAUDE"
+                        claude_response = call_claude_fallback(
+                            refined_user_input,
+                            model="anthropic/claude-3.7-sonnet"
+                        )
+                        full_response += "🤖 Claude response:\n\n"
+                        full_response += (claude_response or "No response.")
+                        message_placeholder.write(full_response)
+                        st.session_state.messages.append({"role": "assistant", "content": full_response})
+                        st.session_state.last_route = route
+                        return
+                
+                    # 4) Compact UI for RAG only
+                    route = "RAG"
+                    message_placeholder.markdown("📚 Found relevant context via **RAG**. (expand below for sources)")
+                    with st.expander("Show retrieval sources"):
+                        for s in sources:
+                            st.markdown(
+                                f"- **Score** {s.get('score', 0.0):.3f} • "
+                                f"{s.get('organization','')} {s.get('report_type','')} {s.get('fiscal_year','')}  \n"
+                                f"`{s.get('source','')}`  \n"
+                                f"{s.get('content_preview','')}"
+                            )
+                    st.session_state.messages.append({"role": "assistant", "content": "📚 Found relevant context via RAG."})
+                    st.session_state.last_route = route
 
         # Step 2: Stream financial analysis response
         start_time = time.time()

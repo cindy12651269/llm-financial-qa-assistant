@@ -163,7 +163,7 @@ def call_claude_fallback(
     prompt: str,
     system_prompt: Optional[str] = SYS_PROMPT,
     model: Optional[str] = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 512,
     temperature: float = 0.3,
     escape_markdown: bool = True,
 ) -> Optional[str]:
