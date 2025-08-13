@@ -18,17 +18,17 @@ logger = get_logger(__name__)
 
 def load_documents(docs_path: Path) -> list[Document]:
     """
-    Loads financial Markdown documents from the specified path.
+    Load all Markdown files under docs_path (recursive).
 
     Args:
-        docs_path (Path): The path to the documents (expects 'demo.md').
+        docs_path (Path): The path to the documents.
 
     Returns:
         List[Document]: A list of loaded documents.
     """
     loader = DirectoryLoader(
         path=docs_path,
-        glob="demo.md",  # Focused on a single financial demo file
+        glob="**/*.md",  
         show_progress=True,
     )
     return loader.load()
@@ -239,7 +239,7 @@ def get_args() -> argparse.Namespace:
 
 def main(parameters):
     """
-    Main entry point: builds memory index from demo.md in /docs.
+    Main entry point: builds memory index from docs.
     """
     root_folder = Path(__file__).resolve().parent.parent
     doc_path = root_folder / "docs"

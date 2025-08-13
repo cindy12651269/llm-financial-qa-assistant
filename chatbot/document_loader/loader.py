@@ -12,14 +12,14 @@ logger = get_logger(__name__)
 class DirectoryLoader:
     """
     Loader class for extracting financial documents from a specific directory.
-    Optimized for single-file use cases (e.g., demo.md) where financial metadata
+    Optimized for docs where financial metadata
     such as report type, fiscal year, and organization can be pre-defined.
     """
 
     def __init__(
         self,
         path: Path,
-        glob: str = "demo.md",
+        glob: str = "**/[!.]*",
         recursive: bool = False,
         show_progress: bool = False,
         use_multithreading: bool = False,
@@ -32,7 +32,7 @@ class DirectoryLoader:
             Initialize the DirectoryLoader.
 
         Args:
-            path (Path): Root path to the directory containing demo.md
+            path (Path): Root path to the directory containing md files from docs
             glob (str): File match pattern (default: 'demo.md')
             recursive (bool): Whether to search subdirectories (not used)
             show_progress (bool): Whether to show tqdm progress bar
@@ -50,7 +50,7 @@ class DirectoryLoader:
 
     def load(self) -> list[Document]:
         """
-        Load financial documents (expecting a single demo file).
+        Load financial documents.
 
         Returns:
             list[Document]: List of Document objects with financial metadata
@@ -111,7 +111,7 @@ if __name__ == "__main__":
     docs_path = root_folder / "docs"
     loader = DirectoryLoader(
         path=docs_path,
-        glob="demo.md",
+        glob="*.md",
         recursive=True,
         use_multithreading=True,
         show_progress=True,
