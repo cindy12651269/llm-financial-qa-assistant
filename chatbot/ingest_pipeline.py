@@ -9,12 +9,12 @@ from chatbot.financial_fetcher import (  # Directly reuse existing utilities
     headers as SEC_HEADERS,
 )
 
-# === Load environment variables from .env ===
+# Load environment variables from .env 
 load_dotenv()
 OUTPUT_DIR = Path(os.getenv("SEC_OUTPUT_DIR", "./sec_filings"))
 REQUEST_TIMEOUT = 30
 
-# === Ensure output directory exists ===
+# Ensure output directory exists 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def fetch_recent_filings_basic(cik: str) -> List[dict]:
@@ -47,11 +47,8 @@ def fetch_recent_filings_basic(cik: str) -> List[dict]:
         })
     return out
 
+# Download text content from a given SEC filing document URL. Handles both HTML and plain text.
 def download_text_from_url(url: str) -> str:
-    """
-    Download text content from a given SEC filing document URL.
-    Handles both HTML and plain text.
-    """
     r = requests.get(url, headers=SEC_HEADERS, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     return r.text
@@ -84,21 +81,30 @@ def ingest_ticker(ticker: str, forms: List[str], max_per_ticker: int, since: Opt
             print(f"[error] Failed to fetch {doc_url}: {e}")
             continue
 
-        # Save filing content as .txt for later embedding
-        out_path = OUTPUT_DIR / f"{ticker_up}_{filing['form']}_{filing['date']}.txt"
+        # Save filing content as .md (minimal header + raw body)
+        header = (
+            f"# {ticker_up} — {filing['form']}\n\n"
+            f"- **Date**: {filing['date']}\n"
+            f"- **Source**: <{doc_url}>\n"
+            f"- **Title**: {filing.get('desc','') or '(no title)'}\n\n"
+            f"---\n\n"
+        )
+        out_path = OUTPUT_DIR / f"{ticker_up}_{filing['form']}_{filing['date']}.md"
         with open(out_path, "w", encoding="utf-8") as f:
-            f.write(text)
+            f.write(header)
+            f.write(text)  # keep raw HTML/text; no conversion
 
         count += 1
         print(f"[ok] Saved {out_path}")
-        if count >= max_per_ticker:
+
+        if count >= max_per_ticker:   
             break
 
-        time.sleep(0.5)  # Be polite to SEC servers
-    return count
+        time.sleep(0.5)               
+    return count                       # Don't return None
 
 
-# RAG-focused CLI smoke test (optional)
+# RAG-focused CLI smoke test 
 def rag_cli_smoke_test() -> None:
     """
     RAG smoke test for three retrieval questions：

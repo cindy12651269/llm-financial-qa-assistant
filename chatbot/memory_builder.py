@@ -1,17 +1,14 @@
 import argparse
 import sys
 from pathlib import Path
-import json
-import re
-from typing import List, Optional
+from typing import Dict, Optional, Any
 from chatbot.bot.memory.embedder import Embedder
 from chatbot.bot.memory.vector_database.chroma import Chroma
-from chatbot.financial_fetcher import get_stock_price, get_financial_news, get_financial_metric, get_cik_from_ticker
-from document_loader.format import Format
-from document_loader.loader import DirectoryLoader
-from document_loader.text_splitter import create_recursive_text_splitter
-from entities.document import Document
-from helpers.log import get_logger
+from chatbot.document_loader.format import Format
+from chatbot.document_loader.loader import DirectoryLoader
+from chatbot.document_loader.text_splitter import create_recursive_text_splitter
+from chatbot.entities.document import Document
+from chatbot.helpers.log import get_logger
 
 logger = get_logger(__name__)
 
@@ -28,11 +25,65 @@ def load_documents(docs_path: Path) -> list[Document]:
     """
     loader = DirectoryLoader(
         path=docs_path,
-        glob="**/*.md",  
+        glob="**/*.md", 
+        recursive=True, 
         show_progress=True,
     )
     return loader.load()
 
+
+# Metadata helpers
+def infer_org_form(file_name: str) -> tuple[str, str]:
+    """
+    Infer ticker & form from filename like:
+    AAPL_10-Q_2025-08-01.md  /  TSLA_8-K_2025-07-23.md
+    """
+    stem = Path(file_name).stem
+    parts = stem.split("_", 2)  # [TICKER, FORM, ...]
+    org  = parts[0].upper() if parts else ""
+    form = parts[1].upper() if len(parts) > 1 else ""
+    return org, form
+
+def parse_header(md_text: str) -> Dict[str, str]:
+    """
+    Parse the simple header written by ingest_pipeline:
+      - **Date**: YYYY-MM-DD
+      - **Source**: <URL>
+      - **Title**: ...
+    Only scan the first ~40 lines for speed.
+    """
+    date = source = title = ""
+    for i, line in enumerate(md_text.splitlines()):
+        if i > 40:  # header is always at the top
+            break
+        line = line.strip()
+        if line.startswith("- **Date**:"):
+            date = line.split(":", 1)[1].strip()
+        elif line.startswith("- **Source**:"):
+            raw = line.split(":", 1)[1].strip()
+            source = raw.strip("<>")  # remove <...>
+        elif line.startswith("- **Title**:"):
+            title = line.split(":", 1)[1].strip()
+    return {"date": date, "source": source, "title": title}
+
+def normalize_metadata(file_path: Path, md_text: str, base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Build lightweight, consistent metadata for scoring/filters & citations.
+    """
+    org, form = infer_org_form(file_path.name)
+    hdr = parse_header(md_text)
+    fiscal_year = (hdr["date"][:4] if hdr["date"] else "")
+
+    meta = dict(base or {})
+    meta.update({
+        "organization": org,          # e.g., AAPL
+        "report_type": form,          # 10-K / 10-Q / 8-K
+        "fiscal_year": fiscal_year,   # YYYY
+        "source_type": "filing",      # later: ir / slides
+        "source": hdr["source"],      # canonical URL
+        "title": hdr["title"],        # human-friendly title
+    })
+    return meta
 
 def split_chunks(sources: list, chunk_size: int = 512, chunk_overlap: int = 25) -> list:
     """
@@ -54,138 +105,6 @@ def split_chunks(sources: list, chunk_size: int = 512, chunk_overlap: int = 25) 
         chunks.append(chunk)
     return chunks
 
-# Strict ticker extraction & resolution 
-_TICKER_BLACKLIST = {
-    "I","ME","MY","US","USA","EPS","PE","ROE","YOY","QOQ","FY","Q","THE","A","AN","AND",
-    "WHAT","IS","PRICE","STOCK","ON","IN","FOR","OF"
-}
-
-_COMMON_NAME_MAP = {
-    "apple": "AAPL",
-    "tesla": "TSLA",
-    "microsoft": "MSFT",
-    "google": "GOOGL",
-    "alphabet": "GOOGL",
-    "amazon": "AMZN",
-    "meta": "META",
-    "facebook": "META",
-    "nvidia": "NVDA",
-}
-
-def extract_possible_tickers(query: str) -> list[str]:
-    # Keep original case; only pick explicit uppercase tokens or cashtags
-    cashtags = [m.group(1).upper() for m in re.finditer(r'(?<!\w)\$([A-Za-z]{1,5})\b', query)]
-    uppercase_tokens = re.findall(r'\b[A-Z]{1,5}\b', query)
-    tickers = {t for t in (cashtags + uppercase_tokens) if t not in _TICKER_BLACKLIST}
-    return list(tickers)
-
-def resolve_ticker_from_query(query: str) -> str | None:
-    # 1) Try cashtags/explicit tickers
-    candidates = extract_possible_tickers(query)
-    if candidates:
-        # If multiple, pick the first that isn't “A”, “I”, etc. (already filtered)
-        return sorted(candidates, key=len, reverse=True)[0]
-
-    # 2) Try company-name map
-    qlow = query.lower()
-    for name, tkr in _COMMON_NAME_MAP.items():
-        if name in qlow:
-            return tkr
-    return None
-
-
-# ----------------- fallbacks -----------------
-
-def fallback_stock_lookup(query: str) -> List[Document]:
-    """
-    Attempts to fetch stock price via financial_fetcher.get_stock_price, only if the
-    query actually looks like a stock price question, and only for validated tickers.
-    """
-    if not re.search(r'\b(price|stock|share|quote|trading|last|close)\b', query, re.I):
-        return []
-
-    ticker = resolve_ticker_from_query(query)
-    if not ticker:
-        return []
-
-    data = get_stock_price(ticker)
-    if not data:
-        return []
-
-    return [Document(
-        page_content=json.dumps(data),
-        metadata={
-            "source": "financial_fetcher",
-            "organization": data.get("ticker", ticker),
-            "document": "tool:get_stock_price",
-        }
-    )]
-
-def fallback_news_lookup(query: str) -> List[Document]:
-    """
-    Fetch latest financial news for a resolved ticker if possible; otherwise fallback to the raw query.
-    """
-    ticker = resolve_ticker_from_query(query)
-    term = ticker if ticker else query
-    items = get_financial_news(term)
-    if not items:
-        return []
-    return [Document(
-        page_content=json.dumps(item),
-        metadata={"source": "financial_fetcher", "document": "tool:get_financial_news"}
-    ) for item in items]
-
-def fallback_financial_metric_lookup(query: str) -> List[Document]:
-    """
-    Fetch a specific financial metric (EPS, revenue, net income, operating income/margin)
-    via financial_fetcher.get_financial_metric, using a safe resolver and strict intent checks.
-    """
-    # Must look like a metric question
-    if not re.search(r"\b(eps|earnings per share|revenue|net income|operating (income|margin))\b", query, re.I):
-        return []
-
-    ym = re.search(r"\b(20\d{2})\b", query)
-    if not ym:
-        return []
-    year = int(ym.group(1))
-
-    qm = re.search(r"\bQ([1-4])\b", query, re.I)
-    quarter = int(qm.group(1)) if qm else None
-
-    ticker = resolve_ticker_from_query(query)
-    if not ticker:
-        return []
-
-    metric = None
-    for kw, key in {
-        "earnings per share": "eps",
-        "eps": "eps",
-        "revenue": "revenue",
-        "net income": "net_income",
-        "operating income": "operating_income",
-        "operating margin": "operating_margin",
-    }.items():
-        if kw in query.lower():
-            metric = key
-            break
-    if not metric:
-        return []
-
-    data = get_financial_metric(ticker, year, metric, quarter)
-    if not data:
-        return []
-
-    return [Document(
-        page_content=json.dumps(data),
-        metadata={
-            "source": "financial_fetcher",
-            "organization": ticker,
-            "document": f"tool:get_{metric}",
-            "fiscal_year": str(year),
-            "report_type": ("10-Q" if quarter else "10-K"),
-        }
-    )]
-
 def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int, chunk_overlap: int):
     """
     Loads financial documents, splits them, embeds, and stores in vector DB.
@@ -195,19 +114,62 @@ def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int,
         vector_store_path (str): Path to persist Chroma DB.
         chunk_size (int): Chunk size for document splitting.
         chunk_overlap (int): Overlap between chunks.
+        Build the vector index from Markdown docs under `docs_path`.
+
+    What it does (minimal, safe):
+    1) Load all `**/*.md` recursively via DirectoryLoader (already configured in load_documents()).
+    2) Normalize metadata per file (organization/report_type/fiscal_year/source_type/source/title).
+    3) Strip the ingest header (above the first '---') and only index the BODY.
+    4) Chunk the BODY and persist to Chroma.
+
     """
     logger.info(f"Loading documents from: {docs_path}")
     sources = load_documents(docs_path)
     logger.info(f"Number of loaded documents: {len(sources)}")
 
     logger.info("Chunking documents...")
-    chunks = split_chunks(sources, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    logger.info(f"Number of generated chunks: {len(chunks)}")
+    splitter = create_recursive_text_splitter(
+        format=Format.MARKDOWN.value,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+
+    chunk_docs: list[Document] = []
+
+    for src in sources:
+        md_text = src.page_content or ""
+
+        # Prefer local file path if available; fall back to 'source' only when it's not a URL.
+        src_path_str = (
+            src.metadata.get("filepath")
+            or (
+                src.metadata.get("source")
+                if not str(src.metadata.get("source", "")).lower().startswith(("http://", "https://"))
+                else ""
+            )
+            or ""
+        )
+        file_path = Path(src_path_str) if src_path_str else Path("unknown.md")
+
+        # Normalize metadata using filename + header
+        meta = normalize_metadata(file_path, md_text, base=src.metadata)
+
+        # Body after header separator (avoid indexing the header itself)
+        body = md_text.split("\n---\n", 1)[1] if "\n---\n" in md_text else md_text
+        if not body.strip():
+            continue
+
+        # Split BODY and attach the same normalized metadata to each chunk
+        for piece in splitter.split_text(body):
+            if piece.strip():
+                chunk_docs.append(Document(page_content=piece, metadata=meta))
+
+    logger.info(f"Number of generated chunks: {len(chunk_docs)}")
 
     logger.info("Creating memory index...")
     embedding = Embedder()
     vector_database = Chroma(persist_directory=str(vector_store_path), embedding=embedding)
-    vector_database.from_chunks(chunks)
+    vector_database.from_chunks(chunk_docs)
     logger.info("Memory Index has been created successfully!")
 
 
@@ -237,21 +199,42 @@ def get_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# CLI test
+def get_args() -> argparse.Namespace:
+    """
+    Parse CLI arguments for chunking.
+    """
+    parser = argparse.ArgumentParser(description="Memory Builder for Financial Documents")
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        help="The maximum size of each chunk. Defaults to 512.",
+        required=False,
+        default=512,
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        help="The amount of overlap between consecutive chunks. Defaults to 25.",
+        required=False,
+        default=25,
+    )
+    return parser.parse_args()
+
 def main(parameters):
     """
-    Main entry point: builds memory index from docs.
+    Main entry point: builds memory index from docs/.
     """
-    root_folder = Path(__file__).resolve().parent.parent
-    doc_path = root_folder / "docs"
+    root_folder = Path(__file__).resolve().parent.parent  # project root (adjust if needed)
+    docs_path = root_folder / "docs"
     vector_store_path = root_folder / "vector_store" / "docs_index"
 
     build_memory_index(
-        doc_path,
+        docs_path,
         str(vector_store_path),
         parameters.chunk_size,
         parameters.chunk_overlap,
     )
-
 
 if __name__ == "__main__":
     try:

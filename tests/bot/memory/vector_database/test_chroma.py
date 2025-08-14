@@ -41,20 +41,70 @@ def test_similarity_search(chroma_instance):
     assert isinstance(results[0], Document)
 
 
-def test_similarity_search_with_threshold(chroma_instance):
+def test_similarity_search_with_threshold_basic(chroma_instance):
     texts = ["Net income of Tesla in 2022 exceeded analyst expectations."]
-    metadatas = [{"source": "MarketWatch"}]
+    metadatas = [{"source": "MarketWatch"}]  # no source_type provided
     chroma_instance.add_texts(texts, metadatas)
 
     query = "Tesla income 2022"
-    results, source = chroma_instance.similarity_search_with_threshold(query, k=1, threshold=0.0)
+    results, sources = chroma_instance.similarity_search_with_threshold(
+        query, k=1, threshold=0.0
+    )
 
     assert len(results) == 1
-    assert len(source) == 1
+    assert len(sources) == 1
     assert isinstance(results[0], Document)
-    assert isinstance(source[0].get("score"), float)
-    assert 0.0 <= source[0]["score"] <= 1.0
+    assert isinstance(sources[0].get("score"), float)
+    assert 0.0 <= sources[0]["score"] <= 1.0
+    # shape remains stable
+    assert "source" in sources[0]
+    assert "organization" in sources[0]  # may be empty if not provided
+    assert "report_type" in sources[0]   # may be empty if not provided
 
+def test_similarity_search_with_threshold_kpi_excludes_news(chroma_instance):
+    texts = [
+        "EPS up due to lower opex per management commentary.",
+        "Media recap: Company raised guidance for FY."
+    ]
+    metadatas = [
+        {"source": "10-Q", "source_type": "filing"},
+        {"source": "Some News Site", "source_type": "news"},
+    ]
+    chroma_instance.add_texts(texts, metadatas)
+
+    # KPI-like query (contains eps/guidance keywords)
+    query = "What was the EPS and guidance change?"
+    results, sources = chroma_instance.similarity_search_with_threshold(
+        query, k=2, threshold=0.0
+    )
+
+    # ensure news is filtered out
+    assert len(results) >= 1
+    for s in sources:
+        assert s.get("source_type", "").lower() != "news"
+
+def test_similarity_search_with_threshold_trusted_boost_fields(chroma_instance):
+    texts = [
+        "Management Discussion and Analysis: revenue grew due to pricing.",
+        "Random forum post: revenues might grow."
+    ]
+    metadatas = [
+        {"source": "10-K", "source_type": "filing", "section": "MD&A"},
+        {"source": "forum", "source_type": "other"},
+    ]
+    chroma_instance.add_texts(texts, metadatas)
+
+    query = "Explain why revenue increased"
+    results, sources = chroma_instance.similarity_search_with_threshold(
+        query, k=2, threshold=0.0
+    )
+
+    assert len(results) >= 1
+    # Shape & fields exist
+    for s in sources:
+        assert "score" in s
+        assert "source_type" in s
+        assert "section" in s
 
 def test_similarity_search_with_score(chroma_instance):
     texts = ["Alphabet's advertising segment remains the primary revenue driver."]

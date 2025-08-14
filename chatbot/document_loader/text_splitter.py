@@ -27,10 +27,8 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Iterable
-
-from entities.document import Document
-
-from document_loader.format import get_separators
+from chatbot.entities.document import Document
+from chatbot.document_loader.format import get_separators
 
 logger = logging.getLogger(__name__)
 

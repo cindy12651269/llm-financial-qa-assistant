@@ -138,7 +138,7 @@ def resolve_ticker_from_query(query: str) -> str | None:
     return None
 
 
-# ----------------- fallbacks -----------------
+# Fallbacks
 
 def fallback_stock_lookup(query: str) -> List[Document]:
     """

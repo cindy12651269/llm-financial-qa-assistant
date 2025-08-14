@@ -1,7 +1,7 @@
 import logging
 import uuid
+import re
 from typing import Any, Callable, Iterable
-
 import chromadb
 import chromadb.config
 from chromadb.utils.batch_utils import create_batches
@@ -72,8 +72,6 @@ class Chroma:
             embedding_function=None,  # Handle embeddings manually
             metadata=collection_metadata,
         )
-
-
 
     @property
     def embeddings(self) -> Embedder | None:
@@ -298,11 +296,13 @@ class Chroma:
         exclude_tools: bool = True,  # NEW: default to exclude tool-injected docs from RAG
     ) -> tuple[list[Document], list[dict[str, Any]]]:
         """
-        Perform a semantic similarity search using financial context,
-        and return results with metadata such as fiscal year, report type, etc.
+        Perform a semantic similarity search using financial context, and return results
+        with metadata such as fiscal year, report type, etc.
 
-        This is often used in retrieval-augmented generation (RAG) settings
-        for answering financial questions from company filings or glossary entries.
+        Routing intent:
+        - This function is used by RAG. Tool answers are handled earlier in the stack.
+        - For KPI-like questions (eps/revenue/ebitda/guidance), prefer authoritative sources
+        (filings/IR/slides) and avoid news summaries.
 
         Args:
             query (str): A financial query (e.g. "What is Tesla's EPS in 2023?")
@@ -324,50 +324,72 @@ class Chroma:
         """
         # `similarity_search_with_relevance_scores` return docs and relevance scores in the range [0, 1].
         # 0 is dissimilar, 1 is most similar.
-        docs_and_scores = self.similarity_search_with_relevance_scores(query, k)
-        
-        def _norm(x: float) -> float:
-            if x is None: return 0.0
-            if x <= 0.0: return 0.0
-            if x >= 1.0: return 1.0
-            return float(x)
+        # --- light config (kept local to minimize surface area) ---
+        KPI_RE = re.compile(r"\b(eps|earnings per share|revenue|sales|ebitda|guidance)\b", re.I)
+        TRUSTED_TYPES = {"filing", "ir", "slides"}
+        STRONG_SECTIONS = {"md&a", "mda", "outlook", "guidance", "results"}
 
-        docs_and_scores = [(doc, _norm(score)) for doc, score in docs_and_scores]
+        def _clamp01(x: float) -> float:
+            """Clamp any score to [0, 1]."""
+            try:
+                return 0.0 if x is None else max(0.0, min(1.0, float(x)))
+            except Exception:
+                return 0.0
 
-        normalized: list[tuple[Document, float]] = []
-        for doc, raw in docs_and_scores:
-            if raw is None:
+        # 1) Retrieve a wider candidate pool (k * 3) from the underlying store
+        docs_and_scores = self.similarity_search_with_relevance_scores(query, k * 3)
+        is_kpi = bool(KPI_RE.search(query or ""))
+
+        rescored: list[tuple[Document, float, dict]] = []
+
+        for doc, raw_score in docs_and_scores:
+            base = _clamp01(raw_score)
+            md = dict(getattr(doc, "metadata", {}) or {})
+            st = str(md.get("source_type", "")).lower()
+
+            # (a) Skip tool-injected docs for pure RAG, if requested
+            if exclude_tools and st == "tool":
                 continue
-            score01 = _to_unit_interval(raw)
-            # NEW: skip tool docs if requested
-            if exclude_tools and str(doc.metadata.get("source_type", "")).lower() == "tool":
+
+            # (b) KPI questions: exclude news summaries (favor authoritative sources)
+            if is_kpi and st == "news":
                 continue
-            normalized.append((doc, score01))
 
-        if threshold is not None:
-            # keep only results with score >= threshold
-            normalized = [p for p in normalized if p[1] >= threshold]
-            if not normalized:
-                logger.warning(
-                    "No relevant docs were retrieved using the relevance score threshold %s",
-                    threshold,
-                )
+            # (c) Tiny boosts for trusted source types and explanation-heavy sections
+            bonus = 0.0
+            if st in TRUSTED_TYPES:
+                bonus += 0.02
 
-        normalized.sort(key=lambda p: p[1], reverse=True)
+            sec = str(md.get("section", "")).lower()
+            if sec in STRONG_SECTIONS or "md&a" in sec or "management discussion" in sec:
+                bonus += 0.02
 
-        retrieved_contents = [doc for doc, _ in normalized]
+            score = base + bonus
+            md["score"] = round(score, 3)
+            rescored.append((doc, score, md))
+
+        # 2) Threshold filter (default 0.05); then keep top-k
+        thr = 0.0 if threshold is None else float(threshold)
+        kept = [(d, s, m) for (d, s, m) in rescored if s >= thr]
+        kept.sort(key=lambda x: x[1], reverse=True)
+        kept = kept[:k]
+
+        # 3) Shape outputs (documents + structured metadata for UI)
+        retrieved_contents = [d for d, _, _ in kept]
         sources: list[dict[str, Any]] = []
-        for doc, score in normalized:
+        for d, s, m in kept:
             sources.append(
                 {
-                    "score": round(score, 3),
-                    "source": doc.metadata.get("source", "unknown"),
-                    "document": doc.metadata.get("document"),
-                    "organization": doc.metadata.get("organization", ""),
-                    "fiscal_year": doc.metadata.get("fiscal_year", ""),
-                    "report_type": doc.metadata.get("report_type", ""),
-                    "sector": doc.metadata.get("sector", ""),
-                    "content_preview": f"{doc.page_content[:256]}...",
+                    "score": round(s, 3),
+                    "source": m.get("source", "unknown"),
+                    "document": m.get("document"),
+                    "organization": m.get("organization", ""),
+                    "fiscal_year": m.get("fiscal_year", ""),
+                    "report_type": m.get("report_type", ""),
+                    "source_type": m.get("source_type", ""),
+                    "section": m.get("section", ""),
+                    "title": m.get("title", ""),
+                    "content_preview": f"{(d.page_content or '')[:256]}...",
                 }
             )
 
