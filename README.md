@@ -230,10 +230,10 @@ You should see matching outputs for these examples:
 > **Note:** CY (Calendar Year) queries are supported and recorded in the payload/metadata as `basis="CY"`, along with `calendar_year` and `calendar_quarter` fields.  
 > Currently, CY values are resolved using the same FY data from SEC EDGAR and may represent mapped fiscal periods depending on the company's reporting calendar.
 
+---
 
-### 📄 Retrieval-based (RAG) — document citations
-
-Questions answered from indexed filings, IR materials, press releases, or investor slides:
+### 📄 Retrieval-based (RAG) — Preloaded Data
+> **Note:** These are preloaded in `vector_store` (via CLI `ingest_pipeline.py`). They will **not** trigger JIT ingestion because the `.md` files already exist in `docs_index`.
 
 * *Explain why **AAPL** EPS changed in **FY2023 Q4** (quote sources).*
 * *Summarize **Microsoft’s latest earnings call** highlights with citations.*
@@ -241,9 +241,24 @@ Questions answered from indexed filings, IR materials, press releases, or invest
 
 ---
 
-### 💬 General (LLM) — concept or theory only
+### ⚡ JIT Retrieval-based (RAG) — Just-in-time Tests
+> **Note:** These companies/questions are **not** in `PRELOAD` and have no pre-generated `.md` files. UI testing will trigger live JIT ingestion (SEC EDGAR / IR / slides).
 
-No API calls or document retrieval; purely language model reasoning:
+* *Explain why **NVDA** EPS changed in **FY2024 Q2** (quote sources).*
+* *Summarize **Amazon’s latest Q1 2024 earnings call** highlights with citations.*
+* *Compare **Netflix** streaming revenue between **2023** and **2024**, with sources.*
+
+---
+
+### 🧪 RAG — Demo Reference (from `demo.md`)
+> These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
+
+* *Define the **Sharpe ratio** and how to interpret it (with a short example).*
+* *Explain the difference between **alpha** and **beta** in portfolio theory.*
+* *What is a **"bid-ask spread"** in stock trading, and why does it matter?*
+
+### 💬 General (LLM) — concept or theory only
+> **Note:** Pure LLM reasoning; does **not** call APIs or retrieve documents.
 
 * *What is EPS and why is it important?*
 * *How can revenue growth affect stock price?*
@@ -252,7 +267,7 @@ No API calls or document retrieval; purely language model reasoning:
 ---
 
 ### 🔍 Smoke tests
-
+> **Note:** Quick sanity checks for verifying correct tool and fallback routing.
 1. *AAPL latest price* → **Tools**
 2. *TSLA Q4 2023 EPS* → **Tools**
 3. *Explain “market gravity”* → **Claude** (if no document/tool hit)

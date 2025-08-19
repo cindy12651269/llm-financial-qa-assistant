@@ -6,12 +6,12 @@ from typing import List, Optional
 from dotenv import load_dotenv
 from chatbot.financial_fetcher import (  # Directly reuse existing utilities
     get_cik_from_ticker,
-    headers as SEC_HEADERS,
+    SEC_HEADERS,
 )
 
 # Load environment variables from .env 
 load_dotenv()
-OUTPUT_DIR = Path(os.getenv("SEC_OUTPUT_DIR", "./sec_filings"))
+OUTPUT_DIR = Path(os.getenv("SEC_OUTPUT_DIR", "./docs"))
 REQUEST_TIMEOUT = 30
 
 # Ensure output directory exists 
@@ -147,8 +147,8 @@ def main():
     # Original default preload (keep your existing setup below) ---
     top_tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
                    "META", "BRK-B", "TSLA", "UNH", "JNJ"]
-    forms = ["10-K", "10-Q"]
-    since = "2023-01-01"
+    forms = ["8-K", "10-Q", "10-K"]      # ensure earnings press + quarterly + annual
+    since = "2022-01-01"
     max_docs = 3
 
     for ticker in top_tickers:

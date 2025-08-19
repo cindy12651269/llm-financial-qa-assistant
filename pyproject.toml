@@ -45,6 +45,7 @@ nvidia-nvtx-cu12 = { version = "12.1.105", optional = true, platform = "!=darwin
 llama-cpp-python = "^0.3.14"
 yfinance = "^0.2.65"
 openai = "^1.99.1"
+python-dotenv = "^1.1.1"
 
 [tool.poetry.extras]
 cuda-acceleration = [
