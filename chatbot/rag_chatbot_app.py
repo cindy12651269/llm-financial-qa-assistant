@@ -6,6 +6,7 @@ import re
 import json
 import threading
 from pathlib import Path
+import glob
 from entities.document import Document
 from typing import List, Optional
 import streamlit as st
@@ -420,18 +421,15 @@ def display_messages_from_history():
 
 # Step 5: Routing & UI helpers 
 # Produce a single, human-friendly path line.
-def _route_line(kind: str, *, rag_docs: int | None = None, fact: str | None = None) -> str:
-    """
-    Examples:
-      HYBRID — metric fact + explanation (RAG docs=4)
-      TOOLS(metric)
-      TOOLS(price)
-      RAG docs=3
-      CLAUDE (no retrieval)
-    """
-    if kind == "HYBRID":
-        part = f"HYBRID — {('metric' if fact=='metric' else 'price')} fact + explanation"
-        return part + (f" (RAG docs={rag_docs})" if rag_docs is not None else "")
+def _route_line(kind: str, *, rag_docs: int | None = None, fact: str | None = None, ticker: str | None = None) -> str:
+    if kind in ("HYBRID", "HYBRID JIT"):
+        fact_label = "metric" if fact == "metric" else "price"
+        tail = f" (RAG docs={rag_docs})" if rag_docs is not None else ""
+        tick = f" [ticker={ticker}]" if ticker else ""
+        return f"{kind} — {fact_label} fact + explanation{tail}{tick}"
+    if kind == "JIT→RAG":
+        tick = f" [ticker={ticker}]" if ticker else ""
+        return f"JIT→RAG docs={rag_docs or 0}{tick}"
     if kind == "TOOLS":
         return f"TOOLS({fact})" if fact in ("metric", "price") else "TOOLS"
     if kind == "RAG":
@@ -441,21 +439,23 @@ def _route_line(kind: str, *, rag_docs: int | None = None, fact: str | None = No
     return kind
 
 # Return tool payload from a doc (only when source_type == tool).
-def tool_payload(doc): 
+def tool_payload(doc):
     md = getattr(doc, "metadata", {}) or {}
-    return md.get("payload") if str(md.get("source_type","")).lower() == "tool" else None
+    return md.get("payload") if str(md.get("source_type", "")).lower() == "tool" else None
 
-# Render a compact RAG sources expander.
-def show_sources(message_placeholder, srcs: list[dict]):
-    message_placeholder.markdown("📚 Found relevant context via **RAG**. (expand below for sources)")
-    with st.expander("Show retrieval sources"):
-        for s in srcs:
-            st.markdown(
-                f"- **Score** {s.get('score',0.0):.3f} • "
-                f"{s.get('organization','')} {s.get('report_type','')} {s.get('fiscal_year','')}  \n"
-                f"<{s.get('source','')}>  \n"
-                f"{(s.get('title') or s.get('content_preview') or '')}"
-            )
+# Call this INSIDE a `with st.chat_message("assistant"):` block
+# Render the sources list inside the provided container (same chat bubble)
+def show_sources(container, srcs: list[dict]):  
+    with container:
+        st.markdown("📚 Found relevant context via **RAG**.")
+        with st.expander("Show retrieval sources"):
+            for s in srcs:
+                st.markdown(
+                    f"- **Score** {s.get('score', 0.0):.3f} • "
+                    f"{s.get('organization','')} {s.get('report_type','')} {s.get('fiscal_year','')}  \n"
+                    f"<{s.get('source','')}>  \n"
+                    f"{(s.get('title') or s.get('content_preview') or '')}"
+                )
 
 # Step 6: Main logic for launching financial RAG chatbot
 def main(parameters) -> None:
@@ -482,224 +482,200 @@ def main(parameters) -> None:
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # 1) Retrieve related finance documents (with previews) + stream final answer
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            retrieved_contents: list[Document] = []
-            sources: list[dict] = []
-            route = "INIT"
-
-            # One-line route tracer (prints ONE final, company-agnostic line)
-            _TRACE = os.environ.get("TRACE_ROUTING") == "1"
-            _LOG   = logging.getLogger("ROUTING")
+        # One-line tracer setup (terminal)
+        _TRACE = os.environ.get("TRACE_ROUTING") == "1"
+        _LOG   = logging.getLogger("ROUTING")
+        route  = "INIT"
+    
+        # Record final route & optionally print a single line to terminal.
+        def set_route(kind: str, *, rag_docs: int | None = None, fact: str | None = None, ticker: str | None = None):   
+            nonlocal route
+            route = kind
+            st.session_state.last_route = route
+            if _TRACE:
+                _LOG.info("[PATH] " + _route_line(kind, rag_docs=rag_docs, fact=fact, ticker=ticker))
             
-            # Set final route and optionally print a single terminal line.
-            def set_route(kind: str, *, rag_docs: int | None = None, fact: str | None = None):
-                nonlocal route
-                route = kind
-                if _TRACE:
-                    _LOG.info("[PATH] " + _route_line(kind, rag_docs=rag_docs, fact=fact))
+        with st.spinner("📊 Refining your financial query and retrieving relevant documents…"):
+            # Resolve ticker from query, refine question, and detect intent
+            orig_query    = user_input
+            refined_query = refine_question(llm, user_input, chat_history=chat_history)
+            tkr = (resolve_ticker_from_query(orig_query) or "").upper()
 
-            with st.spinner("📊 Refining your financial query and retrieving relevant documents…"):
-                # Resolve ticker from query, refine question, and detect intent
-                orig_query    = user_input
-                refined_query = refine_question(llm, user_input, chat_history=chat_history)
-                tkr = (resolve_ticker_from_query(orig_query) or "").upper()
+            # Intent (compact)
+            PRICE_RE   = re.compile(r"\b(price|quote|share price|last|close)\b", re.I)
+            METRIC_RE  = re.compile(r"\b(eps|earnings per share|revenue|net income|operating (margin|income)|gross margin|guidance)\b", re.I)
+            EXPLAIN_RE = re.compile(r"\b(why|explain|because|driver|impact|summari[sz]e|highlights|compare|vs\.?|versus|earnings call|conference call|prepared remarks)\b", re.I)
+            q_price   = bool(PRICE_RE.search(refined_query or ""))
+            q_metric  = bool(METRIC_RE.search(refined_query or ""))
+            q_explain = bool(EXPLAIN_RE.search(refined_query or ""))
+            
+            if _TRACE:
+                _LOG.info(f"[DBG] intent: price={q_price}, metric={q_metric}, explain={q_explain}, ticker={tkr or '-'}")
 
-                # Intent (compact)
-                PRICE_RE   = re.compile(r"\b(price|quote|share price|last|close)\b", re.I)
-                METRIC_RE  = re.compile(r"\b(eps|earnings per share|revenue|net income|operating (margin|income)|gross margin|guidance)\b", re.I)
-                EXPLAIN_RE = re.compile(r"\b(why|explain|because|driver|impact|summari[sz]e|highlights|compare|vs\.?|versus|earnings call|conference call|prepared remarks)\b", re.I)
-                q_price, q_metric, q_explain = map(
-                    bool,
-                    (PRICE_RE.search(refined_query or ""),
-                     METRIC_RE.search(refined_query or ""),
-                     EXPLAIN_RE.search(refined_query or ""))
+            # 1) Run API first: stock -> metric -> news (single loop)
+            facts_md, fact_kind = "", None  # keep one tool fact for HYBRID
+            answered = False
+
+            for tool in [fallback_stock_lookup, fallback_financial_metric_lookup, fallback_news_lookup]:
+                fallback_docs = tool(refined_query) or []
+                if not fallback_docs:
+                    continue
+
+                # Scan the tool payloads and pick the first usable one
+                for d in fallback_docs:
+                    md = getattr(d, "metadata", {}) or {}
+                    if str(md.get("source_type", "")).lower() != "tool":
+                        continue
+                    p = md.get("payload") or {}
+                    kind = p.get("kind")
+
+                    # price 
+                    if kind == "price" and p.get("ticker") and p.get("value") is not None:
+                        t, v   = p["ticker"], p["value"]
+                        asof   = p.get("as_of", "")
+                        src    = p.get("source", "financial_fetcher")
+                        header = f"**{t}** latest price: **{v}**" + (f" (as of {asof})" if asof else "")
+
+                        if q_explain: # Explanatory: keep the fact, continue to JIT/RAG (no early return)
+                            facts_md  = f"**Fact (tool):**\n\n{header}\n\n_Source: {src}_\n\n"
+                            fact_kind = "price"
+                            if _TRACE: _LOG.info(f"[DBG] captured fact: kind=price, ticker={t}, asof={asof}")
+                        else:
+                            set_route("TOOLS", fact="price")
+                            with st.chat_message("assistant"):
+                                st.markdown(f"**Route:** TOOLS\n\n{header}\n\n_Source: {src}_")
+                            answered = True
+                        break  # break inner loop (we used a price payload)
+
+                    # metric (EPS / revenue / etc.) 
+                    if kind == "metric" and p.get("ticker") and p.get("metric") and p.get("value") is not None:
+                        # Compose an informative header
+                        y, qv, asof = p.get("year"), p.get("quarter"), p.get("as_of", "")
+                        qtxt        = f" Q{qv}" if qv else ""
+                        basis       = p.get("basis", "FY")
+                        cal_y       = p.get("calendar_year")
+                        cal_q       = p.get("calendar_quarter")
+                        note        = p.get("note")
+                        src         = p.get("source", "financial_fetcher")
+
+                        header = f"**{p['ticker']} {p['metric']} {y or ''}{qtxt}: {p['value']}**"
+                        if asof:
+                            header += f" (as of {asof})"
+                        header += f"  \n_Basis: **{basis}**_"
+                        if basis == "CY" and (cal_y or cal_q):
+                            header += f" — Calendar: **{cal_y or ''}{' Q'+str(cal_q) if cal_q else ''}**"
+                        if note:
+                            header += f"  \n_Note: {note}_"
+
+                        if q_explain:
+                            # Explanatory: keep the fact, continue to JIT/RAG
+                            facts_md  = f"**Fact (tool):**\n\n{header}\n\n_Source: {src}_\n\n"
+                            fact_kind = "metric"
+                            if _TRACE: _LOG.info(f"[DBG] captured fact: kind=metric, ticker={p.get('ticker')}, metric={p.get('metric')}")
+                        else:
+                            set_route("TOOLS", fact="metric")
+                            with st.chat_message("assistant"):
+                                st.markdown(f"**Route:** TOOLS\n\n{header}\n\n_Source: {src}_")
+                            answered = True
+                        break
+
+                    # news 
+                    if kind == "news" and (items := p.get("items")):
+                            # Only non-explanatory queries should return news
+                        if not q_explain:
+                            src  = p.get("source", "financial_fetcher")
+                            top  = items[:3]
+                            lines = [f"- {it.get('title','(untitled)')} <{it.get('url','')}>" for it in top]
+                            set_route("TOOLS")
+                            with st.chat_message("assistant"):
+                                st.markdown(f"**Route:** TOOLS\n\n**Latest headlines:**\n" + "\n".join(lines) + f"\n\n_Source: {src}_")
+                            answered = True
+                        break
+                if answered:
+                    return  # API answered non-explanatory query; we're done
+
+            if _TRACE:
+                _LOG.info(f"[DBG] after API: fact_kind={fact_kind}, facts_md_len={len(facts_md or '')}, q_explain={q_explain}")
+
+            # 2) JIT (if needed) + RAG retrieval 
+            used_jit = False
+            if q_explain and tkr and JIT_ENABLED:
+                try:
+                    PRELOAD = {"AAPL","MSFT","GOOGL","AMZN","NVDA","META","BRK-B","TSLA","UNH","JNJ"}
+                    def _has_local_docs(_t: str) -> bool:
+                        docs_dir = Path(__file__).resolve().parents[1] / "docs"
+                        return any(glob.glob(str(docs_dir / f"{_t.upper()}_*.md")))
+                    if (tkr not in PRELOAD) and (not _has_local_docs(tkr)):
+                        ensure_company_indexed(tkr, cap=3, timeout=10)
+                        used_jit = True
+                        if _TRACE: _LOG.info(f"[DBG] JIT.ensure_company_indexed fired for ticker={tkr}")
+                except Exception as e:
+                    if _TRACE: _LOG.warning(f"[DBG] JIT.ensure_company_indexed error: {e!r}")
+
+            retrieved_contents, sources = index.similarity_search_with_threshold(
+                query=refined_query, k=parameters.k, threshold=0.05, exclude_tools=True
+            )
+            if _TRACE:
+                _LOG.info(f"[DBG] RAG.retrieved={len(retrieved_contents)}")
+
+            if not retrieved_contents:
+                set_route("CLAUDE")
+                with st.chat_message("assistant"):
+                    out = call_claude_fallback(refined_query, model="anthropic/claude-3.7-sonnet") or "No response."
+                    st.write("🤖 Claude response:\n\n" + out)
+                return
+
+            # 3) Final route tag + header bubble (route + sources)
+            if q_explain:
+                final_kind = (
+                    "HYBRID JIT" if (used_jit and facts_md) else
+                    ("JIT→RAG"   if (used_jit and not facts_md) else
+                    ("HYBRID"    if facts_md else "RAG"))
                 )
+                set_route(final_kind, rag_docs=len(retrieved_contents), fact=(fact_kind if facts_md else None), ticker=(tkr if used_jit else None))
+            else:
+                final_kind = "RAG"
+                set_route("RAG", rag_docs=len(retrieved_contents))
 
-                # HYBRID: explain-like + (metric or price)
-                if q_explain and (q_metric or q_price):
-                    facts_md = ""
-                    fact_kind = None  # "metric" | "price"
+            with st.chat_message("assistant"):
+                header = st.empty()
+                box    = st.container()
+                if facts_md:
+                    header.markdown(f"**Route:** {final_kind}\n\n{facts_md}")
+                else:
+                    header.markdown(f"**Route:** {final_kind}\n")
+                show_sources(box, sources)
 
-                    # (1) metric fact preferred
-                    if q_metric:
-                        for d in (fallback_financial_metric_lookup(refined_query) or []):
-                            p = tool_payload(d)
-                            if p and p.get("kind") == "metric" and p.get("value") is not None:
-                                try:
-                                    header = compose_metric_header(p)
-                                except Exception:
-                                    t,m,v,y,q = p.get("ticker"),p.get("metric"),p.get("value"),p.get("year"),p.get("quarter")
-                                    header = f"**{t} {m} {y or ''}{(' Q'+str(q)) if q else ''}: {v}**"
-                                facts_md  = f"**Fact (tool):**\n\n{header}\n\n_Source: {p.get('source','financial_fetcher')}_\n\n"
-                                fact_kind = "metric"
-                                break
-
-                    # (2) price fact if no metric captured
-                    if not facts_md and q_price:
-                        for d in (fallback_stock_lookup(refined_query) or []):
-                            p = tool_payload(d)
-                            if p and p.get("kind") == "price" and p.get("value") is not None:
-                                asof    = f" (as of {p.get('as_of','')})" if p.get("as_of") else ""
-                                facts_md  = f"**Fact (tool):** **{p['ticker']}** latest price: **{p['value']}**{asof}\n\n_Source: {p.get('source','financial_fetcher')}_\n\n"
-                                fact_kind = "price"
-                                break
-
-                    # JIT (non-blocking), then RAG for explanations/citations
-                    if JIT_ENABLED and tkr:
-                        try: ensure_company_indexed(tkr, cap=3, timeout=10)
-                        except Exception: pass
-
-                    retrieved_contents, sources = index.similarity_search_with_threshold(
-                        query=refined_query, k=parameters.k, threshold=0.05, exclude_tools=True
-                        )
-                    if not retrieved_contents:
-                        set_route("CLAUDE")
-                        out = call_claude_fallback(refined_query, model="anthropic/claude-3.7-sonnet") or "No response."
-                        message_placeholder.write("🤖 Claude response:\n\n" + out)
-                        st.session_state.last_route = route
-                        return
-
-                    # Final single-line path in terminal, and UI route badge
-                    set_route("HYBRID" if facts_md else "RAG", rag_docs=len(retrieved_contents), fact=fact_kind)
-                    message_placeholder.markdown(f"**Route:** {'HYBRID' if facts_md else 'RAG'}\n\n" + (facts_md or ""))
-                    show_sources(message_placeholder, sources)
-                    st.session_state.last_route = route
-
-                # Non-explanation: API Tools 
-                else: # metric → tools
-                    # 1) Tools (stock -> metric -> news) — API first, binary routing
-                    if not retrieved_contents:
-                        for tool in [fallback_stock_lookup, fallback_financial_metric_lookup, fallback_news_lookup]:
-                            fallback_docs = tool(refined_query)  # ← 用 refined_query
-                            if not fallback_docs:
-                                continue
-
-                            # Fast-path: scan all docs for a usable tool payload; answer & return
-                            for d in fallback_docs:
-                                md = getattr(d, "metadata", {}) or {}
-                                if str(md.get("source_type", "")).lower() != "tool":
-                                    continue
-                                payload = md.get("payload") or {}
-                                kind = payload.get("kind")
-
-                                # price
-                                if kind == "price" and payload.get("ticker") and payload.get("value") is not None:
-                                    t, v = payload["ticker"], payload["value"]
-                                    asof = payload.get("as_of", "")
-                                    src  = payload.get("source", "financial_fetcher")
-                                    route = "TOOLS"
-                                    message_placeholder.markdown(
-                                        f"**Route:** {route}\n\n"
-                                        f"**{t}** latest price: **{v}**"
-                                        + (f" (as of {asof})" if asof else "")
-                                        + f"\n\n_Source: {src}_"
-                                    )
-                                    st.session_state.messages.append({"role": "assistant", "content": f"{t} latest price: {v} (src: {src})"})
-                                    st.session_state.last_route = route
-                                    return
-
-                                # metric (EPS / revenue / etc.)
-                                if kind == "metric" and payload.get("ticker") and payload.get("metric") and payload.get("value") is not None:
-                                    t, m, val = payload["ticker"], payload["metric"], payload["value"]
-                                    y, q, asof = payload.get("year"), payload.get("quarter"), payload.get("as_of", "")
-                                    basis = payload.get("basis", "FY")
-                                    cal_y = payload.get("calendar_year")
-                                    cal_q = payload.get("calendar_quarter")
-                                    note  = payload.get("note")
-                                    qtxt  = f" Q{q}" if q else ""
-                                    src   = payload.get("source", "financial_fetcher")
-                                    route = "TOOLS"  # 或 set_route("TOOLS", fact="metric")
-
-                                    # Compose an informative header that shows the basis clearly
-                                    header  = f"**{t} {m} {y or ''}{qtxt}: {val}**"
-                                    if asof: header += f" (as of {asof})"
-                                    header += f"  \n_Basis: **{basis}**_"
-                                    if basis == "CY" and (cal_y or cal_q):
-                                        header += f" — Calendar: **{cal_y or ''}{' Q'+str(cal_q) if cal_q else ''}**"
-                                    if note:
-                                        header += f"  \n_Note: {note}_"
-
-                                    message_placeholder.markdown(f"**Route:** {route}\n\n{header}\n\n_Source: {src}_")
-                                    st.session_state.last_route = route
-                                    return
-
-                                # news
-                                if kind == "news" and (items := payload.get("items")):
-                                    src = payload.get("source", "financial_fetcher")
-                                    top = items[:3]
-                                    lines = [f"- {it.get('title','(untitled)')} <{it.get('url','')}>" for it in top]
-                                    route = "TOOLS"  # 或 set_route("TOOLS", fact="news")
-                                    message_placeholder.markdown(
-                                        f"**Route:** {route}\n\n"
-                                        f"**Latest headlines:**\n" + "\n".join(lines) + f"\n\n_Source: {src}_"
-                                    )
-                                    st.session_state.messages.append({"role": "assistant", "content": "Latest headlines shown (Tools)."})
-                                    st.session_state.last_route = route
-                                    return
-
-                    # API tools didn’t answer → RAG → Claude
-                    retrieved_contents, sources = index.similarity_search_with_threshold(
-                        query=refined_query, k=parameters.k, threshold=0.05, exclude_tools=True
-                    )
-                    if not retrieved_contents:
-                        set_route("CLAUDE")  # prints: [PATH] CLAUDE (no retrieval)
-                        out = call_claude_fallback(refined_query, model="anthropic/claude-3.7-sonnet") or "No response."
-                        message_placeholder.write("🤖 Claude response:\n\n" + out)
-                        st.session_state.last_route = route
-                        return
-                    # Prints: [PATH] RAG docs=N
-                    set_route("RAG", rag_docs=len(retrieved_contents))  
-                    message_placeholder.markdown("**Route:** RAG\n")
-                    show_sources(message_placeholder, sources)
-                    st.session_state.last_route = route
-
-        # 2. Stream financial analysis response
+        # 4) Streaming answer bubble 
         start_time = time.time()
-
-        # Add once, near this block: citation rules for filing-grounded answers 
         CITATION_RULES = (
             "Use ONLY the provided documents.\n"
             "Quote at least TWO numeric sentences from filings (10-K/10-Q/8-K/IR), "
             "showing exact figures/percent changes, then explain.\n"
             "Do NOT use news or third-party sites; if filings lack the answer, say so briefly."
         )
+        CITATION_ROUTES = {"RAG", "HYBRID", "HYBRID JIT", "JIT→RAG"}
+        use_citation = st.session_state.get("last_route") in CITATION_ROUTES
+        if _TRACE:
+            _LOG.info(f"[DBG] streaming: use_citation_rules={use_citation}, route={st.session_state.get('last_route')}")
+
+        task_for_model = f"{user_input}\n\n[CITATION RULES]\n{CITATION_RULES}" if use_citation else user_input
 
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
-
-            # Build the final task prompt:
-            # - For RAG/HYBRID routes, enforce filing citations via rules.
-            # - For other routes (TOOLS/CLAUDE), keep original user_input.
-            if st.session_state.get("last_route") in {"RAG", "HYBRID"}:
-                # Enforce numeric filing quotes + no news.
-                task_with_rules = f"{user_input}\n\n[CITATION RULES]\n{CITATION_RULES}"
-                task_for_model = task_with_rules
-            else:
-                task_for_model = user_input
-
-            with st.spinner(text="Generating financial insight from documents and chat history – hang tight! "):
-                # Keep your existing synthesis strategy and retrieval context
+            with st.spinner("Generating financial insight from documents and chat history…"):
                 streamer, fmt_prompts = answer_with_context(
-                    llm,
-                    ctx_synthesis_strategy,
-                    task_for_model,            # Pass the task WITH citation rules when RAG/HYBRID
-                    chat_history,
-                    retrieved_contents         # Same doc list as before
+                    llm, ctx_synthesis_strategy, task_for_model, chat_history, retrieved_contents
                 )
-                # Token streaming (unchanged)
                 for token in streamer:
                     full_response += llm.parse_token(token)
                     message_placeholder.markdown(full_response + "▌")
-
                 message_placeholder.markdown(full_response)
                 chat_history.append(f"question: {user_input}, answer: {full_response}")
 
         st.session_state.messages.append({"role": "assistant", "content": full_response})
-        took = time.time() - start_time
-        logger.info(f"\n--- Took {took:.2f} seconds ---")
+        logging.getLogger(__name__).info(f"\n--- Took {time.time() - start_time:.2f} seconds ---")
 
 # Step 7: Command-line interface (CLI) for financial RAG chatbot
 # CLI arguments to select model & strategy

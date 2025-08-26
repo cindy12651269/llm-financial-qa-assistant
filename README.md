@@ -192,12 +192,12 @@ streamlit run chatbot/chatbot_app.py -- --model starling --max-new-tokens 512
 To interact with a GUI with document-based RAG capabilities, use:
 
 ```bash
-streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization
-streamlit run chatbot/rag_chatbot_app.py -- --model openchat-3.6 --k 2 --synthesis-strategy async-tree-summarization
-streamlit run chatbot/rag_chatbot_app.py -- --model phi-3.5 --k 2 --synthesis-strategy async-tree-summarization
-streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b --k 2 --synthesis-strategy async-tree-summarization
-streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --k 2 --synthesis-strategy async-tree-summarization
-streamlit run chatbot/rag_chatbot_app.py -- --model starling --k 2 --synthesis-strategy async-tree-summarization
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model openchat-3.6 --k 2 --synthesis-strategy async-tree-summarization
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model phi-3.5 --k 2 --synthesis-strategy async-tree-summarization
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b --k 2 --synthesis-strategy async-tree-summarization
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --k 2 --synthesis-strategy async-tree-summarization
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model starling --k 2 --synthesis-strategy async-tree-summarization
 ```
 
 ![rag_chatbot_example.gif](images%2Frag_chatbot_example.gif)
@@ -231,7 +231,13 @@ You should see matching outputs for these examples:
 > Currently, CY values are resolved using the same FY data from SEC EDGAR and may represent mapped fiscal periods depending on the company's reporting calendar.
 
 ---
+### 🧪 RAG — Demo Reference (from `demo.md`)
+> These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
 
+* *Define the **Sharpe ratio** and how to interpret it (with a short example).*
+* *Explain the difference between **alpha** and **beta** in portfolio theory.*
+* *What is a **"bid-ask spread"** in stock trading, and why does it matter?*
+---
 ### 📄 Retrieval-based (RAG) — Preloaded Data
 > **Note:** These are preloaded in `vector_store` (via CLI `ingest_pipeline.py`). They will **not** trigger JIT ingestion because the `.md` files already exist in `docs_index`.
 
@@ -248,14 +254,7 @@ You should see matching outputs for these examples:
 * *Summarize **Amazon’s latest Q1 2024 earnings call** highlights with citations.*
 * *Compare **Netflix** streaming revenue between **2023** and **2024**, with sources.*
 
----
 
-### 🧪 RAG — Demo Reference (from `demo.md`)
-> These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
-
-* *Define the **Sharpe ratio** and how to interpret it (with a short example).*
-* *Explain the difference between **alpha** and **beta** in portfolio theory.*
-* *What is a **"bid-ask spread"** in stock trading, and why does it matter?*
 
 ### 💬 General (LLM) — concept or theory only
 > **Note:** Pure LLM reasoning; does **not** call APIs or retrieve documents.
