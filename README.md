@@ -241,9 +241,9 @@ You should see matching outputs for these examples:
 ### 📄 Retrieval-based (RAG) — Preloaded Data
 > **Note:** These are preloaded in `vector_store` (via CLI `ingest_pipeline.py`). They will **not** trigger JIT ingestion because the `.md` files already exist in `docs_index`.
 
-* *Explain why **AAPL** EPS changed in **FY2023 Q4** (quote sources).*
-* *Summarize **Microsoft’s latest earnings call** highlights with citations.*
-* *Compare **TSLA** automotive gross margin between **2022** and **2023**, with sources.*
+* *What was **Apple’s diluted EPS** in calendar **Q3 2025**, and what changed vs the prior quarter (calendar **Q2 2025**)?*
+* *From **Microsoft’s 8-K** filed on **2025-07-30**, list two key drivers mentioned by management for revenue growth, with quotes*
+* *According to **Tesla’s Q2 2025 10-Q**, what factors affected automotive gross margin in the quarter? Provide cited sentences.*
 
 ---
 
@@ -253,9 +253,24 @@ You should see matching outputs for these examples:
 * *Explain why **NVDA** EPS changed in **FY2024 Q2** (quote sources).*
 * *Summarize **Amazon’s latest Q1 2024 earnings call** highlights with citations.*
 * *Compare **Netflix** streaming revenue between **2023** and **2024**, with sources.*
+---
+#### 🔄 After JIT Ingestion — Sync New Docs
+Run these steps to rebuild the vector index after JIT files are saved into `docs/`:
 
+```bash
+# 1. Stop the app
+Ctrl + C
 
+# 2. Clear old index
+rm -rf vector_store/docs_index
 
+# 3. Rebuild index with new docs
+python -m chatbot.memory_builder --chunk-size 512 --chunk-overlap 25
+
+# 4. Restart the app
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py
+
+---
 ### 💬 General (LLM) — concept or theory only
 > **Note:** Pure LLM reasoning; does **not** call APIs or retrieve documents.
 

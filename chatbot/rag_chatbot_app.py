@@ -32,6 +32,14 @@ from helpers.log import get_logger
 # STEP 1 Drop-in: Disable parallel tokenization to avoid Streamlit warnings    
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Index path guard (early check) 
+logging.basicConfig(level=logging.INFO)
+INDEX_DIR = Path(os.getenv("INDEX_PATH", "vector_store/docs_index"))
+logging.info(f"[INIT] Using index path: {INDEX_DIR.resolve()}")
+if not INDEX_DIR.exists():
+    raise RuntimeError(f"[ERR] Index directory missing: {INDEX_DIR.resolve()} "
+                       f"— run memory_builder to create it.")
+
 logger = get_logger(__name__)
 
 def escape_markdown(text: str) -> str:
@@ -67,14 +75,14 @@ def _has_enough_local_docs(ticker: str, cap: int = 3) -> bool:
     that look like 8-K or 10-Q forms. This is a fast local guard to skip redundant ingestion.
     """
     tkr = ticker.upper()
-    # First check docs/<TICKER>/*.md
+    # Case 1: check docs/<TICKER>/*.md 
     subdir = DOCS_DIR / tkr
     if subdir.exists():
         hits = [p for p in subdir.glob("*.md") if ("8-K" in p.name or "10-Q" in p.name)]
         if len(hits) >= cap:
             return True
 
-    # Then check flat files docs/<TICKER>_FORM_YYYY-MM-DD.md
+    # Case 2: Check flat files docs/<TICKER>_FORM_YYYY-MM-DD.md
     flat = [p for p in DOCS_DIR.glob(f"{tkr}_*_*.md") if ("8-K" in p.name or "10-Q" in p.name)]
     return len(flat) >= cap
 
@@ -91,7 +99,12 @@ def ensure_company_indexed(ticker: str, cap: int = 3, timeout: int = 10) -> None
     t = threading.Thread(target=_job, daemon=True)
     t.start()
     t.join(timeout=timeout)  # Return after timeout regardless of completion
-
+    logging.warning(  # Always warn user to rebuild persistent vector index
+        "[JIT] %s ingestion triggered. If new .md files were written to docs/, "
+        "run memory_builder to include them in the persistent index.",
+        (ticker or "").upper(),
+    )
+    
 # Step 3: Load the fine-tuned financial LLM client
 @st.cache_resource()
 def load_llm_client(model_folder: Path, model_name: str) -> LamaCppClient:
@@ -457,7 +470,35 @@ def show_sources(container, srcs: list[dict]):
                     f"{(s.get('title') or s.get('content_preview') or '')}"
                 )
 
+# Wrap tool fact as a high-priority synthetic document to see it first in the RAG context window.
+def make_tool_fact_doc(facts_md: str) -> Document:
+    return Document(
+        page_content=facts_md,
+        metadata={"source": "TOOL_FACT", "priority": "high", "title": "Numeric fact from tools"}
+    )
+
+CITATION_RULES = (
+    "Use ONLY the provided CONTEXT.\n"
+    "If TOOL FACT conflicts with retrieved text, prefer TOOL FACT and state the discrepancy in one sentence"
+    "Quote at least TWO numeric sentences from filings (10-K/10-Q/8-K/IR) "
+    "showing exact figures/percent changes, then explain.\n"
+    "Do NOT use news or third-party sites; if filings lack the answer, say so briefly."
+)
+
+# Put Tool fact and citation rules at the top, and Keeping instructions first materially improves adherence.
+def build_task_prompt(user_input: str, facts_md: str | None, use_citation: bool) -> str:
+    header_parts: list[str] = []
+    if facts_md:
+        header_parts.append("NUMERIC FACT (from tools):\n" + facts_md.strip())
+    if use_citation:
+        header_parts.append("[CITATION RULES]\n" + CITATION_RULES)
+    header_parts.append("QUESTION:\n" + user_input.strip())
+    return "\n\n".join(header_parts)
+
+
+
 # Step 6: Main logic for launching financial RAG chatbot
+  
 def main(parameters) -> None:
     root_folder = Path(__file__).resolve().parent.parent
     model_folder = root_folder / "models"
@@ -516,6 +557,35 @@ def main(parameters) -> None:
             facts_md, fact_kind = "", None  # keep one tool fact for HYBRID
             answered = False
 
+            # tiny locals for prior-period + number cast
+            def _prior(y, q):
+                if y is None: return None, None
+                if q is None: return y - 1, None
+                return (y, q - 1) if q > 1 else (y - 1, 4)
+
+            def _num(x):
+                try:
+                    return float(str(x).replace(",", "").strip())
+                except Exception:
+                    return None
+
+            def _fmt_metric_hdr(tkr, metric, val, y, q, asof=None, basis="FY"):
+                try:
+                    payload = {"ticker": tkr, "metric": metric, "value": val, "year": y, "quarter": q,
+                            "as_of": asof, "basis": basis}
+                    return compose_metric_header(payload)
+                except Exception:
+                    qtxt = f" Q{q}" if q else ""
+                    s = f"**{tkr} {metric} {y or ''}{qtxt}: {val}**"
+                    if asof: s += f" (as of {asof})"
+                    return s
+            
+            # Be more permissive for "explain/compare" intent to trigger HYBRID
+            _compare_re = re.compile(
+                r"\b(vs|versus|compare|comparison|prior quarter|previous quarter|qoq|quarter[- ]over[- ]quarter|yoy|year[- ]over[- ]year|y/y|change[d]?)\b",
+                re.I)
+            want_hybrid = bool(q_explain or _compare_re.search(refined_query or ""))
+
             for tool in [fallback_stock_lookup, fallback_financial_metric_lookup, fallback_news_lookup]:
                 fallback_docs = tool(refined_query) or []
                 if not fallback_docs:
@@ -536,7 +606,8 @@ def main(parameters) -> None:
                         src    = p.get("source", "financial_fetcher")
                         header = f"**{t}** latest price: **{v}**" + (f" (as of {asof})" if asof else "")
 
-                        if q_explain: # Explanatory: keep the fact, continue to JIT/RAG (no early return)
+                        if want_hybrid:
+                            # Keep the fact and continue to JIT/RAG for explanation
                             facts_md  = f"**Fact (tool):**\n\n{header}\n\n_Source: {src}_\n\n"
                             fact_kind = "price"
                             if _TRACE: _LOG.info(f"[DBG] captured fact: kind=price, ticker={t}, asof={asof}")
@@ -545,44 +616,58 @@ def main(parameters) -> None:
                             with st.chat_message("assistant"):
                                 st.markdown(f"**Route:** TOOLS\n\n{header}\n\n_Source: {src}_")
                             answered = True
-                        break  # break inner loop (we used a price payload)
+                        break  # used a price payload
 
                     # metric (EPS / revenue / etc.) 
                     if kind == "metric" and p.get("ticker") and p.get("metric") and p.get("value") is not None:
-                        # Compose an informative header
+                        tkr   = p["ticker"]
+                        mname = p["metric"]
+                        val   = p["value"]
                         y, qv, asof = p.get("year"), p.get("quarter"), p.get("as_of", "")
-                        qtxt        = f" Q{qv}" if qv else ""
-                        basis       = p.get("basis", "FY")
-                        cal_y       = p.get("calendar_year")
-                        cal_q       = p.get("calendar_quarter")
-                        note        = p.get("note")
-                        src         = p.get("source", "financial_fetcher")
+                        basis = p.get("basis", "FY")
+                        src   = p.get("source", "financial_fetcher")
 
-                        header = f"**{p['ticker']} {p['metric']} {y or ''}{qtxt}: {p['value']}**"
-                        if asof:
-                            header += f" (as of {asof})"
-                        header += f"  \n_Basis: **{basis}**_"
-                        if basis == "CY" and (cal_y or cal_q):
-                            header += f" — Calendar: **{cal_y or ''}{' Q'+str(cal_q) if cal_q else ''}**"
-                        if note:
-                            header += f"  \n_Note: {note}_"
+                        cur_hdr  = _fmt_metric_hdr(tkr, mname, val, y, qv, asof=asof, basis=basis)
+                        cur_num  = _num(val)
+                        prior_hdr, prior_num = "", None
 
-                        if q_explain:
-                            # Explanatory: keep the fact, continue to JIT/RAG
-                            facts_md  = f"**Fact (tool):**\n\n{header}\n\n_Source: {src}_\n\n"
+                        # Only fetch prior period when we intend to run HYBRID
+                        if want_hybrid:
+                            try:
+                                py, pq = _prior(y, qv)
+                                if py is not None:
+                                    prev = get_financial_metric(tkr, py, metric=mname, quarter=pq)
+                                    if prev and prev.get("value") is not None:
+                                        prior_hdr = _fmt_metric_hdr(
+                                            tkr, mname, prev["value"], py, pq,
+                                            asof=prev.get("as_of"),
+                                            basis=("FY" if pq is None else basis)
+                                        )
+                                        prior_num = _num(prev["value"])
+                            except Exception as e:
+                                if _TRACE: _LOG.info(f"[DBG] prior fetch failed: {e}")
+
+                        if want_hybrid:
+                            parts = [f"**Fact (tool):**\n\n{cur_hdr}\n\n_Source: {src}_"]
+                            if prior_hdr:
+                                parts.append(f"**Prior period (tool):**\n\n{prior_hdr}\n\n_Source: SEC EDGAR companyfacts_")
+                            if cur_num is not None and prior_num not in (None, 0.0):
+                                yoy = (cur_num - prior_num) / prior_num * 100.0
+                                parts.append(f"**YoY change (auto-calc): {yoy:.1f}%**")
+                            facts_md  = "\n\n".join(parts) + "\n\n"
                             fact_kind = "metric"
-                            if _TRACE: _LOG.info(f"[DBG] captured fact: kind=metric, ticker={p.get('ticker')}, metric={p.get('metric')}")
+                            if _TRACE: _LOG.info(f"[DBG] captured fact: metric={mname}, prior_found={bool(prior_hdr)}")
                         else:
                             set_route("TOOLS", fact="metric")
                             with st.chat_message("assistant"):
-                                st.markdown(f"**Route:** TOOLS\n\n{header}\n\n_Source: {src}_")
+                                st.markdown(f"**Route:** TOOLS\n\n{cur_hdr}\n\n_Source: {src}_")
                             answered = True
                         break
 
                     # news 
                     if kind == "news" and (items := p.get("items")):
-                            # Only non-explanatory queries should return news
-                        if not q_explain:
+                        # Only non-explanatory queries should return news
+                        if not want_hybrid:
                             src  = p.get("source", "financial_fetcher")
                             top  = items[:3]
                             lines = [f"- {it.get('title','(untitled)')} <{it.get('url','')}>" for it in top]
@@ -591,26 +676,33 @@ def main(parameters) -> None:
                                 st.markdown(f"**Route:** TOOLS\n\n**Latest headlines:**\n" + "\n".join(lines) + f"\n\n_Source: {src}_")
                             answered = True
                         break
+
                 if answered:
-                    return  # API answered non-explanatory query; we're done
+                    return  # API answered a non-explanatory query; we're done
 
             if _TRACE:
-                _LOG.info(f"[DBG] after API: fact_kind={fact_kind}, facts_md_len={len(facts_md or '')}, q_explain={q_explain}")
+                _LOG.info(f"[DBG] after API: fact_kind={fact_kind}, facts_md_len={len(facts_md or '')}, want_hybrid={want_hybrid}, q_explain={q_explain}")
 
             # 2) JIT (if needed) + RAG retrieval 
             used_jit = False
             if q_explain and tkr and JIT_ENABLED:
                 try:
                     PRELOAD = {"AAPL","MSFT","GOOGL","AMZN","NVDA","META","BRK-B","TSLA","UNH","JNJ"}
-                    def _has_local_docs(_t: str) -> bool:
-                        docs_dir = Path(__file__).resolve().parents[1] / "docs"
-                        return any(glob.glob(str(docs_dir / f"{_t.upper()}_*.md")))
-                    if (tkr not in PRELOAD) and (not _has_local_docs(tkr)):
-                        ensure_company_indexed(tkr, cap=3, timeout=10)
+                    # Only trigger JIT when the ticker is NOT in PRELOAD and we don't already have enough local docs.
+                    if (tkr not in PRELOAD) and (not _has_enough_local_docs(tkr, cap=3)):
+                        ensure_company_indexed(tkr, cap=3, timeout=10)  # fire-and-forget; returns after `timeout`
                         used_jit = True
-                        if _TRACE: _LOG.info(f"[DBG] JIT.ensure_company_indexed fired for ticker={tkr}")
+                        if _TRACE:
+                            _LOG.info(f"[DBG] JIT.ensure_company_indexed fired for ticker={tkr}")
                 except Exception as e:
-                    if _TRACE: _LOG.warning(f"[DBG] JIT.ensure_company_indexed error: {e!r}")
+                    if _TRACE:
+                        _LOG.warning(f"[DBG] JIT.ensure_company_indexed error: {e!r}")         
+            # Log current index stats to confirm how many docs/chunks are loaded in memory
+            try:
+                stats = getattr(getattr(index, "_collection", None), "count", lambda: "?")()
+            except Exception:
+                stats = "?"
+            _LOG.info(f"[INDEX] Current docs in memory: {stats}")
 
             retrieved_contents, sources = index.similarity_search_with_threshold(
                 query=refined_query, k=parameters.k, threshold=0.05, exclude_tools=True
@@ -648,35 +740,75 @@ def main(parameters) -> None:
 
         # 4) Streaming answer bubble 
         start_time = time.time()
-        CITATION_RULES = (
-            "Use ONLY the provided documents.\n"
-            "Quote at least TWO numeric sentences from filings (10-K/10-Q/8-K/IR), "
-            "showing exact figures/percent changes, then explain.\n"
-            "Do NOT use news or third-party sites; if filings lack the answer, say so briefly."
-        )
+
+        # Minimal post-processor: remove leaked markers, tidy spacing, warn on YoY without two numbers
+        def _post_sanitize_answer(text: str) -> str:
+            """Minimal sanitizer: remove markers, clean spacing, warn if YoY lacks numbers."""
+            if not text:
+                return text
+            out = re.sub(r"\[(TOOL FACT|FACT|CONTEXT|CITATION RULES|RULES)\]\s*", "", text, flags=re.I)
+            out = re.sub(r"\s{2,}", " ", out)       # collapse multiple spaces
+            out = re.sub(r"(?m)^[ \t]+", "", out)   # left-trim each line
+            if re.search(r"(?i)\b(yoy|year[- ]over[- ]year)\b", out):
+                if len(re.findall(r"\b\d+(?:\.\d+)?%?\b", out)) < 2:
+                    out += ("\n\n_⚠️ Note: Mentions YoY but missing the prior-period value. "
+                            "Ask me to fetch both periods and I’ll include them clearly._")
+            return out
+
+        # Only enforce citation rules for routes that used retrieval
         CITATION_ROUTES = {"RAG", "HYBRID", "HYBRID JIT", "JIT→RAG"}
         use_citation = st.session_state.get("last_route") in CITATION_ROUTES
         if _TRACE:
             _LOG.info(f"[DBG] streaming: use_citation_rules={use_citation}, route={st.session_state.get('last_route')}")
 
-        task_for_model = f"{user_input}\n\n[CITATION RULES]\n{CITATION_RULES}" if use_citation else user_input
+        # Put the TOOL FACT directly into the model prompt (forces the model to see it)
+        task_for_model = (
+            f"{user_input}\n\n[TOOL FACT]\n{facts_md}\n\n[CITATION RULES]\n{CITATION_RULES}"
+            if use_citation else user_input
+        )
 
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
+
             with st.spinner("Generating financial insight from documents and chat history…"):
+                # Assemble context: keep TOOL FACT as a high-priority virtual doc
+                context_docs: list[Document] = []
+                if facts_md:
+                    # <-- as requested: ensure TOOL FACT is injected into context
+                    context_docs.append(
+                        Document(
+                            page_content=facts_md,
+                            metadata={"source": "TOOL_FACT", "priority": "must_use", "weight": 2.0}
+                        )
+                    )
+                context_docs.extend(retrieved_contents or [])
+
+                # Debug: verify TOOL FACT sits at the head of the context
+                if _TRACE:
+                    head_src = context_docs[0].metadata.get("source") if context_docs else "NONE"
+                    _LOG.info(f"[DBG] context_docs: count={len(context_docs)}, head_source={head_src}")
+                    _LOG.info(f"[DBG] task_for_model prefix:\n{task_for_model[:300]}...")
+
+                # Use task_for_model (with FACT + RULES), not raw user_input
                 streamer, fmt_prompts = answer_with_context(
-                    llm, ctx_synthesis_strategy, task_for_model, chat_history, retrieved_contents
+                    llm, ctx_synthesis_strategy, task_for_model, chat_history, context_docs
                 )
+                _ = fmt_prompts  # keep for debugging; silence "not accessed"
+
+                # Token streaming
                 for token in streamer:
                     full_response += llm.parse_token(token)
                     message_placeholder.markdown(full_response + "▌")
-                message_placeholder.markdown(full_response)
-                chat_history.append(f"question: {user_input}, answer: {full_response}")
 
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+                # Sanitize once at the end (removes leaked headers, fixes spacing, adds YoY note if needed)
+                final_text = _post_sanitize_answer(full_response)
+                message_placeholder.markdown(final_text)
+
+                chat_history.append(f"question: {user_input}, answer: {final_text}")
+
+        st.session_state.messages.append({"role": "assistant", "content": final_text})
         logging.getLogger(__name__).info(f"\n--- Took {time.time() - start_time:.2f} seconds ---")
-
 # Step 7: Command-line interface (CLI) for financial RAG chatbot
 # CLI arguments to select model & strategy
 def get_args() -> argparse.Namespace:

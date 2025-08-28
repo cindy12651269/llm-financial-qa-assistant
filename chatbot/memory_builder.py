@@ -1,5 +1,7 @@
 import argparse
 import sys
+import os
+import logging
 from pathlib import Path
 from typing import Dict, Optional, Any
 from chatbot.bot.memory.embedder import Embedder
@@ -12,6 +14,13 @@ from chatbot.helpers.log import get_logger
 
 logger = get_logger(__name__)
 
+# Index path guard (early check) 
+logging.basicConfig(level=logging.INFO)
+INDEX_DIR = Path(os.getenv("INDEX_PATH", "vector_store/docs_index"))
+logging.info(f"[INIT] Using index path: {INDEX_DIR.resolve()}")
+if not INDEX_DIR.exists():
+    raise RuntimeError(f"[ERR] Index directory missing: {INDEX_DIR.resolve()} "
+                       f"— run memory_builder to create it.")
 
 def load_documents(docs_path: Path) -> list[Document]:
     """
@@ -170,6 +179,9 @@ def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int,
     embedding = Embedder()
     vector_database = Chroma(persist_directory=str(vector_store_path), embedding=embedding)
     vector_database.from_chunks(chunk_docs)
+    logger.info(
+    f"[INDEX BUILT] files={len(sources)} chunks={len(chunk_docs)} "
+    f"chunk_size={chunk_size}, overlap={chunk_overlap} -> {vector_store_path}")
     logger.info("Memory Index has been created successfully!")
 
 

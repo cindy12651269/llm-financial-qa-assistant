@@ -11,7 +11,8 @@ from chatbot.financial_fetcher import (  # Directly reuse existing utilities
 
 # Load environment variables from .env 
 load_dotenv()
-OUTPUT_DIR = Path(os.getenv("SEC_OUTPUT_DIR", "./docs"))
+OUTPUT_DIR = Path(os.getenv("SEC_OUTPUT_DIR", "./docs")) # Where SEC filings are saved (.md files)
+INDEX_DIR = Path(os.getenv("INDEX_PATH", "vector_store/docs_index"))# Where vector index is stored
 REQUEST_TIMEOUT = 30
 
 # Ensure output directory exists 
