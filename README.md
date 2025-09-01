@@ -234,16 +234,16 @@ You should see matching outputs for these examples:
 ### 🧪 RAG — Demo Reference (from `demo.md`)
 > These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
 
-* *Define the **Sharpe ratio** and how to interpret it (with a short example).*
-* *Explain the difference between **alpha** and **beta** in portfolio theory.*
-* *What is a **"bid-ask spread"** in stock trading, and why does it matter?*
+* *Define the Sharpe ratio and how to interpret it (with a short example).*
+* *Explain the difference between alpha and beta in portfolio theory.*
+* *What is a "bid-ask spread" in stock trading, and why does it matter?*
 ---
 ### 📄 Retrieval-based (RAG) — Preloaded Data
 > **Note:** These are preloaded in `vector_store` (via CLI `ingest_pipeline.py`). They will **not** trigger JIT ingestion because the `.md` files already exist in `docs_index`.
 
-* *What was **Apple’s diluted EPS** in calendar **Q3 2025**, and what changed vs the prior quarter (calendar **Q2 2025**)?*
-* *From **Microsoft’s 8-K** filed on **2025-07-30**, list two key drivers mentioned by management for revenue growth, with quotes*
-* *According to **Tesla’s Q2 2025 10-Q**, what factors affected automotive gross margin in the quarter? Provide cited sentences.*
+* *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?*
+* *What investments will Microsoft continue according to its official filings in 2025?*
+* *According to Tesla’s Q2 2025 10-Q, what factors affected automotive gross margin in the quarter? Provide cited sentences.*
 
 ---
 

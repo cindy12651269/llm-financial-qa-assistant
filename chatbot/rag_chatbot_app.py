@@ -1,4 +1,6 @@
 import os, logging, re
+import html, unicodedata
+import hashlib
 import argparse
 import sys
 import time
@@ -416,11 +418,8 @@ def init_welcome_message() -> None:
     with st.chat_message("assistant"):
         st.write("Welcome to your financial assistant. What would you like to analyze today?")
 
-# Allow users to clear financial conversation memory
+# Initializes the chat history, allowing users to clear the conversation.
 def reset_chat_history(chat_history: ChatHistory) -> None:
-    """
-    Initializes the chat history, allowing users to clear the conversation.
-    """
     clear_button = st.sidebar.button("🗑️ Clear Conversation", key="clear")
     if clear_button or "messages" not in st.session_state:
         st.session_state.messages = []
@@ -428,9 +427,13 @@ def reset_chat_history(chat_history: ChatHistory) -> None:
 
 # Display past user/assistant interactions
 def display_messages_from_history():
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            if msg.get("render") == "html" and msg["role"] == "assistant":
+                st.markdown(msg.get("html") or msg["content"], unsafe_allow_html=True)
+            else:
+                st.markdown(msg["content"])
+
 
 # Step 5: Routing & UI helpers 
 # Produce a single, human-friendly path line.
@@ -738,77 +741,122 @@ def main(parameters) -> None:
                     header.markdown(f"**Route:** {final_kind}\n")
                 show_sources(box, sources)
 
-        # 4) Streaming answer bubble 
+        # 4) Streaming answer bubble
         start_time = time.time()
 
-        # Minimal post-processor: remove leaked markers, tidy spacing, warn on YoY without two numbers
-        def _post_sanitize_answer(text: str) -> str:
-            """Minimal sanitizer: remove markers, clean spacing, warn if YoY lacks numbers."""
-            if not text:
-                return text
-            out = re.sub(r"\[(TOOL FACT|FACT|CONTEXT|CITATION RULES|RULES)\]\s*", "", text, flags=re.I)
-            out = re.sub(r"\s{2,}", " ", out)       # collapse multiple spaces
-            out = re.sub(r"(?m)^[ \t]+", "", out)   # left-trim each line
-            if re.search(r"(?i)\b(yoy|year[- ]over[- ]year)\b", out):
-                if len(re.findall(r"\b\d+(?:\.\d+)?%?\b", out)) < 2:
-                    out += ("\n\n_⚠️ Note: Mentions YoY but missing the prior-period value. "
-                            "Ask me to fetch both periods and I’ll include them clearly._")
-            return out
-
-        # Only enforce citation rules for routes that used retrieval
+        # Apply citation rules only when retrieval is used
         CITATION_ROUTES = {"RAG", "HYBRID", "HYBRID JIT", "JIT→RAG"}
         use_citation = st.session_state.get("last_route") in CITATION_ROUTES
         if _TRACE:
-            _LOG.info(f"[DBG] streaming: use_citation_rules={use_citation}, route={st.session_state.get('last_route')}")
+            _LOG.info(f"[DBG] streaming: citation={use_citation}, route={st.session_state.get('last_route')}")
+            _LOG.info(f"[DBG] facts_md: len={len(facts_md or '')}, sha1={hashlib.sha1((facts_md or '').encode('utf-8')).hexdigest()[:10]}")
 
-        # Put the TOOL FACT directly into the model prompt (forces the model to see it)
+        # Build task text; inject TOOL FACT so the model must see it
         task_for_model = (
             f"{user_input}\n\n[TOOL FACT]\n{facts_md}\n\n[CITATION RULES]\n{CITATION_RULES}"
             if use_citation else user_input
         )
 
         with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            full_response = ""
+            message_placeholder = st.empty()  # single, reusable area
 
-            with st.spinner("Generating financial insight from documents and chat history…"):
-                # Assemble context: keep TOOL FACT as a high-priority virtual doc
-                context_docs: list[Document] = []
-                if facts_md:
-                    # <-- as requested: ensure TOOL FACT is injected into context
-                    context_docs.append(
-                        Document(
-                            page_content=facts_md,
-                            metadata={"source": "TOOL_FACT", "priority": "must_use", "weight": 2.0}
-                        )
+            # ---------- Helpers (HTML-safe rendering + glue fixes + YoY guard) ----------
+            def _fix_glue(s: str) -> str:
+                s = unicodedata.normalize("NFKC", s).replace("\u00A0", " ")
+                s = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", s)     # 5.62The -> 5.62 The
+                s = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", s)     # EPS38.8 -> EPS 38.8
+                s = re.sub(r"([.,;:])(?!\s|$)", r"\1 ", s)     # space after punctuation
+                s = re.sub(r"\s{2,}", " ", s)
+                s = re.sub(r"\n{3,}", "\n\n", s)
+                return s.strip()
+
+            def _to_html(s: str) -> str:
+                # keep bold, escape the rest, preserve <br>, disable ligatures/italics
+                s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+                s = html.escape(s, quote=False) \
+                        .replace("&lt;strong&gt;", "<strong>") \
+                        .replace("&lt;/strong&gt;", "</strong>") \
+                        .replace("\n", "<br>")
+                return (
+                    "<div style=\"white-space:pre-wrap;font-variant-ligatures:none;"
+                    "-webkit-font-smoothing:antialiased;font-feature-settings:'liga' 0,'clig' 0;"
+                    "font-style:normal;line-height:1.55;font-size:1rem;\">"
+                    f"{s}"
+                    "</div>"
+                )
+
+            YOY_RE = re.compile(r"(?i)\b(yoy|year[- ]over[- ]year)\b")
+            NUM_RE = re.compile(r"\b\d+(?:\.\d+)?%?\b")
+            def _yoy_warn(s: str) -> str:
+                if YOY_RE.search(s) and len(NUM_RE.findall(s)) < 2:
+                    s += ("\n\n⚠️ Note: Mentions YoY but missing the prior-period value. "
+                            "Ask me to fetch both periods and I’ll include them clearly.")
+                return s
+
+            # ---------- Build model context (TOOL FACT as highest-priority virtual doc) ----------
+            context_docs: list[Document] = []
+            if facts_md:
+                context_docs.append(
+                    Document(
+                        page_content=facts_md,
+                        metadata={"source": "TOOL_FACT", "priority": "must_use", "weight": 2.0},
                     )
-                context_docs.extend(retrieved_contents or [])
+                )
+            context_docs.extend(retrieved_contents or [])
 
-                # Debug: verify TOOL FACT sits at the head of the context
-                if _TRACE:
-                    head_src = context_docs[0].metadata.get("source") if context_docs else "NONE"
-                    _LOG.info(f"[DBG] context_docs: count={len(context_docs)}, head_source={head_src}")
-                    _LOG.info(f"[DBG] task_for_model prefix:\n{task_for_model[:300]}...")
+            if _TRACE:
+                head_src = context_docs[0].metadata.get("source") if context_docs else "NONE"
+                _LOG.info(f"[DBG] context_docs: count={len(context_docs)}, head_source={head_src}")
+                _LOG.info(f"[DBG] task_for_model[:300]={task_for_model[:300]!r}")
 
-                # Use task_for_model (with FACT + RULES), not raw user_input
+            # ---------- Generate with sentence-buffered streaming (single placeholder) ----------
+            with st.spinner("Generating financial insight from documents and chat history…"):
                 streamer, fmt_prompts = answer_with_context(
                     llm, ctx_synthesis_strategy, task_for_model, chat_history, context_docs
                 )
-                _ = fmt_prompts  # keep for debugging; silence "not accessed"
+                _ = fmt_prompts  # keep for future debugging
 
-                # Token streaming
+                buffer, rendered = "", ""
+                last_len = 0
+                BOUNDARY_RE = re.compile(r"([.!?])+(\s|\n|$)")
+                token_i = 0
+
                 for token in streamer:
-                    full_response += llm.parse_token(token)
-                    message_placeholder.markdown(full_response + "▌")
+                    piece = llm.parse_token(token)
+                    if _TRACE and token_i < 200:
+                        _LOG.info(f"[TOK#{token_i:03d}] {piece!r}")
+                    token_i += 1
 
-                # Sanitize once at the end (removes leaked headers, fixes spacing, adds YoY note if needed)
-                final_text = _post_sanitize_answer(full_response)
-                message_placeholder.markdown(final_text)
+                    buffer += piece
 
+                    # Flush only at sentence/paragraph boundaries
+                    if BOUNDARY_RE.search(buffer) or "\n\n" in buffer:
+                        rendered += buffer
+                        buffer = ""
+                        preview = _fix_glue(rendered)  # no YoY note mid-stream
+                        if len(preview) > last_len:    # update only if longer
+                            message_placeholder.markdown(_to_html(preview) + " ▌", unsafe_allow_html=True)
+                            last_len = len(preview)
+
+                # Final flush: glue fix + YoY note (once) + HTML render
+                rendered += buffer
+                final_text = _yoy_warn(_fix_glue(rendered))
+                html_out   = _to_html(final_text)
+                message_placeholder.markdown(html_out, unsafe_allow_html=True)
+
+                # Persist: store plain text for analysis + html for safe replay
                 chat_history.append(f"question: {user_input}, answer: {final_text}")
 
-        st.session_state.messages.append({"role": "assistant", "content": final_text})
+        # Store assistant message for this turn (keep render mode for future replay)
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": final_text,  # plain text
+            "render": "html",
+            "html": html_out,       # exact HTML used above
+        })
+
         logging.getLogger(__name__).info(f"\n--- Took {time.time() - start_time:.2f} seconds ---")
+
 # Step 7: Command-line interface (CLI) for financial RAG chatbot
 # CLI arguments to select model & strategy
 def get_args() -> argparse.Namespace:
