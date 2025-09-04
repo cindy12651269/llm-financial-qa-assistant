@@ -1,16 +1,16 @@
-import os, logging, re
+import os, logging, re, traceback
 import html, unicodedata
 import hashlib
 import argparse
 import sys
 import time
-import re
 import json
 import threading
 from pathlib import Path
-import glob
 from entities.document import Document
-from typing import List, Optional
+from chatbot.document_loader.format import Format
+from chatbot.document_loader.text_splitter import create_recursive_text_splitter
+from typing import List, Tuple
 import streamlit as st
 from chatbot.bot.client.lama_cpp_client import LamaCppClient
 from chatbot.bot.conversation.chat_history import ChatHistory
@@ -24,7 +24,7 @@ from chatbot.bot.memory.embedder import Embedder
 from chatbot.bot.memory.vector_database.chroma import Chroma
 from chatbot.bot.model.model_registry import get_model_settings, get_models
 from chatbot.financial_fetcher import (
-    resolve_ticker_from_query,get_stock_price, get_financial_news, 
+    resolve_ticker_sec,get_stock_price, get_financial_news, 
     get_financial_metric, compose_metric_header
 )
 from chatbot.ingest_pipeline import ingest_ticker
@@ -54,59 +54,138 @@ def escape_markdown(text: str) -> str:
 st.set_page_config(page_title="Financial RAG Chatbot", page_icon="💰", initial_sidebar_state="collapsed")
 
 # Step 2: Enable JIT (Just-In-Time) mode for financial RAG chatbot
-# Enable/disable via env var; set RAG_JIT_ENABLED=0 to turn off
+# JIT config (single source of truth) 
 JIT_ENABLED = os.getenv("RAG_JIT_ENABLED", "1") == "1"
-
-# Preloaded companies (skip JIT if found here)
-PRELOAD = {"AAPL", "MSFT", "TSLA", "NVDA", "AMZN"}
-
-# Pattern to detect explanation/analysis questions
-EXPLAIN_RE = re.compile(r"\b(why|explain|reason|driver|cause|impact)\b", re.I)
-
-# Base docs folder (adjust to match your project)
+PRELOAD = {"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "BRK-B", "TSLA", "UNH", "JNJ"}
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 
-# JIT helpers: Return True if the query likely asks for explanations/analysis.
+# Optional: explanation intent 
+EXPLAIN_RE = re.compile(r"\b(why|explain|because|reason|driver|drivers?|factor|factors?|cause|caused|impact|contribute|contributed)\b",re.I,)
 def is_explanation_query(q: str) -> bool:
     return bool(EXPLAIN_RE.search(q or ""))
 
-# Check if we already have enough local docs for this ticker.
+# One entry to get both meta parser & reranker for a given ticker 
+def build_ticker_meta_tools(ticker: str):
+    T = (ticker or "").upper()
+
+    def parse_md_meta(p: Path) -> dict:
+        name = p.stem
+        parts = name.split("_")
+        return {
+            "ticker": T,
+            "report_type": parts[1] if len(parts) > 1 else "",
+            "fiscal_date": parts[2] if len(parts) > 2 else "",
+            "source": str(p),
+        }
+
+    def rerank(docs: List[Document], top_k: int = 8, keywords=None):
+        keywords = [kw.lower() for kw in (keywords or [])]
+
+        def score(d: Document):
+            md, txt = d.metadata or {}, d.page_content.lower()
+            src = md.get("source", "").lower()
+            s = 0
+            if md.get("ticker") == T: s += 20
+            if "10-q" in src or "10-k" in src: s += 8
+            elif "8-k" in src: s += 3
+            s += sum(1 for kw in keywords if kw in txt)
+            return s
+
+        return sorted(docs, key=score, reverse=True)[:top_k]
+
+    return parse_md_meta, rerank
+
+# Local docs guard 
 def _has_enough_local_docs(ticker: str, cap: int = 3) -> bool:
-    """
-    Check if we already have >=cap local markdown files for this ticker
-    that look like 8-K or 10-Q forms. This is a fast local guard to skip redundant ingestion.
-    """
-    tkr = ticker.upper()
-    # Case 1: check docs/<TICKER>/*.md 
+    tkr = (ticker or "").upper()
+    tags = ("8-K", "10-Q", "Exhibit", "press", "earnings", "shareholder")
+
     subdir = DOCS_DIR / tkr
     if subdir.exists():
-        hits = [p for p in subdir.glob("*.md") if ("8-K" in p.name or "10-Q" in p.name)]
+        hits = [p for p in subdir.glob("*.md") if any(tag in p.name for tag in tags)]
+        logging.debug(f"[JIT] Local subdir check for {tkr}: {len(hits)} hits")
         if len(hits) >= cap:
             return True
 
-    # Case 2: Check flat files docs/<TICKER>_FORM_YYYY-MM-DD.md
-    flat = [p for p in DOCS_DIR.glob(f"{tkr}_*_*.md") if ("8-K" in p.name or "10-Q" in p.name)]
+    flat = [p for p in DOCS_DIR.glob(f"{tkr}_*_*.md") if any(tag in p.name for tag in tags)]
+    logging.debug(f"[JIT] Local flat check for {tkr}: {len(flat)} hits")
     return len(flat) >= cap
 
-# Run ingestion in a short-lived thread; wait up to `timeout` seconds, and return without blocking the main response.
-# Fire-and-forget ingestion for a single ticker, Skip if local doc count >=cap.
+
+# Fire-and-forget SEC ingestion 
 def ensure_company_indexed(ticker: str, cap: int = 3, timeout: int = 10) -> None:
     if _has_enough_local_docs(ticker, cap=cap):
+        logging.info(f"[JIT] Skip ingestion for {ticker}, already has enough local docs")
         return
+
     def _job():
         try:
             ingest_ticker(ticker, forms=["8-K", "10-Q"], max_per_ticker=cap, since="2023-01-01")
-        except Exception:
-            pass  # Silent failure
+            logging.info(f"[JIT] ingest_ticker finished for {ticker}")
+        except Exception as e:
+            logging.error(f"[JIT] ingest_ticker failed for {ticker}: {e!r}\n{traceback.format_exc()}")
+
     t = threading.Thread(target=_job, daemon=True)
     t.start()
-    t.join(timeout=timeout)  # Return after timeout regardless of completion
-    logging.warning(  # Always warn user to rebuild persistent vector index
-        "[JIT] %s ingestion triggered. If new .md files were written to docs/, "
-        "run memory_builder to include them in the persistent index.",
-        (ticker or "").upper(),
-    )
-    
+    t.join(timeout=timeout)
+    logging.warning(f"[JIT] {ticker.upper()} ingestion triggered (timeout={timeout}s). "
+                    "Run memory_builder to persist into vector index.")
+
+# Hot-insert freshly saved docs 
+def hot_insert_ticker_docs(index, ticker: str, *, docs_dir: Path = DOCS_DIR,
+    chunk_size: int = 512, chunk_overlap: int = 25,) -> int:
+    tkr = (ticker or "").upper()
+    parse_md_meta, _ = build_ticker_meta_tools(tkr)
+
+    # Collect markdown files (flat + subdir)
+    md_files = list(docs_dir.glob(f"{tkr}_*_*.md"))
+    subdir = docs_dir / tkr
+    if subdir.exists():
+        md_files += list(subdir.glob("*.md"))
+
+    logging.debug(f"[JIT] Found {len(md_files)} md files for {tkr}")
+    if not md_files:
+        logging.info(f"[JIT] No markdown files found for {tkr}")
+        return 0
+
+    # Minimal HTML → text sanitizer
+    def _to_text(raw: str) -> str:
+        if "<" in raw and ">" in raw:
+            raw = re.sub(r"<[^>]+>", " ", raw)  # drop tags
+            raw = re.sub(r"&nbsp;|&amp;|&lt;|&gt;|&quot;|&#160;", " ", raw)  # basic entities
+            raw = re.sub(r"\s{2,}", " ", raw).strip()  # collapse spaces
+        return raw
+
+    # Load and sanitize
+    docs: List[Document] = []
+    for p in md_files:
+        try:
+            txt = _to_text(p.read_text(encoding="utf-8"))
+            if txt:
+                docs.append(Document(page_content=txt, metadata=parse_md_meta(p)))
+        except Exception as e:
+            logging.warning(f"[JIT] Read/sanitize failed for {p}: {e!r}")
+
+    if not docs:
+        return 0
+    # Chunk & insert
+    splitter = create_recursive_text_splitter(
+        format=Format.MARKDOWN.value, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    try:
+        chunks = splitter.split_documents(docs)
+    except Exception as e:
+        logging.warning(f"[JIT] split_documents failed: {e!r}")
+        return 0
+    if not chunks:
+        return 0
+    try:
+        index.from_chunks(chunks)  # supported by your vector store
+        logging.info(f"[JIT] Hot-inserted {len(chunks)} chunks for {tkr}")
+        return len(chunks)
+    except Exception as e:
+        logging.warning(f"[JIT] Hot insert failed for {tkr}: {e!r}")
+        return 0
+
 # Step 3: Load the fine-tuned financial LLM client
 @st.cache_resource()
 def load_llm_client(model_folder: Path, model_name: str) -> LamaCppClient:
@@ -434,7 +513,6 @@ def display_messages_from_history():
             else:
                 st.markdown(msg["content"])
 
-
 # Step 5: Routing & UI helpers 
 # Produce a single, human-friendly path line.
 def _route_line(kind: str, *, rag_docs: int | None = None, fact: str | None = None, ticker: str | None = None) -> str:
@@ -498,11 +576,8 @@ def build_task_prompt(user_input: str, facts_md: str | None, use_citation: bool)
     header_parts.append("QUESTION:\n" + user_input.strip())
     return "\n\n".join(header_parts)
 
-
-
 # Step 6: Main logic for launching financial RAG chatbot
-  
-def main(parameters) -> None:
+def main(parameters) -> None:            
     root_folder = Path(__file__).resolve().parent.parent
     model_folder = root_folder / "models"
     vector_store_path = root_folder / "vector_store" / "docs_index"
@@ -543,8 +618,11 @@ def main(parameters) -> None:
             # Resolve ticker from query, refine question, and detect intent
             orig_query    = user_input
             refined_query = refine_question(llm, user_input, chat_history=chat_history)
-            tkr = (resolve_ticker_from_query(orig_query) or "").upper()
-
+            # tkr = (resolve_ticker_from_query(orig_query) or "").upper()
+            # Robust ticker resolution (sec -> legacy fallback) 
+            tk_sec = resolve_ticker_sec(orig_query)
+            tkr    = (tk_sec or "").upper()
+            _LOG.info("[TICKER] resolved=%s via=%s", (tkr or "-"), ("sec" if tk_sec else "none"))
             # Intent (compact)
             PRICE_RE   = re.compile(r"\b(price|quote|share price|last|close)\b", re.I)
             METRIC_RE  = re.compile(r"\b(eps|earnings per share|revenue|net income|operating (margin|income)|gross margin|guidance)\b", re.I)
@@ -686,33 +764,126 @@ def main(parameters) -> None:
             if _TRACE:
                 _LOG.info(f"[DBG] after API: fact_kind={fact_kind}, facts_md_len={len(facts_md or '')}, want_hybrid={want_hybrid}, q_explain={q_explain}")
 
-            # 2) JIT (if needed) + RAG retrieval 
+            # 2) JIT (if needed) + RAG retrieval
+            # --- A) Resolve ticker from the original query (SEC-backed) ---
+            tkr = resolve_ticker_sec(orig_query)  # <-- use the new resolver; do NOT use legacy name
+            if _TRACE:
+                _LOG.info(f"[TICKER] resolved={tkr or '-'} via=sec")
+
             used_jit = False
-            if q_explain and tkr and JIT_ENABLED:
+
+            # --- B) Trigger JIT only for tickers NOT in PRELOAD and only if JIT is enabled ---
+            if tkr and (tkr not in PRELOAD) and JIT_ENABLED:
                 try:
-                    PRELOAD = {"AAPL","MSFT","GOOGL","AMZN","NVDA","META","BRK-B","TSLA","UNH","JNJ"}
-                    # Only trigger JIT when the ticker is NOT in PRELOAD and we don't already have enough local docs.
-                    if (tkr not in PRELOAD) and (not _has_enough_local_docs(tkr, cap=3)):
-                        ensure_company_indexed(tkr, cap=3, timeout=10)  # fire-and-forget; returns after `timeout`
+                    # Guard: skip ingestion if we already have enough local docs for this ticker
+                    has_enough = _has_enough_local_docs(tkr, cap=3)
+                    if _TRACE:
+                        _LOG.info(f"[JIT] has_enough_local_docs(ticker={tkr}) -> {has_enough}")
+
+                    if not has_enough:
+                        # Kick off a short live ingest (8-K / 10-Q); returns after `timeout` even if still downloading
+                        ensure_company_indexed(tkr, cap=3, timeout=10)
                         used_jit = True
                         if _TRACE:
-                            _LOG.info(f"[DBG] JIT.ensure_company_indexed fired for ticker={tkr}")
+                            _LOG.info(f"[JIT] ingestion fired for ticker={tkr}")
+
+                        # --- C) Hot-insert the newly saved markdown into the in-memory index (no rebuild) ---
+                        try:
+                            inserted = hot_insert_ticker_docs(
+                                index=index,
+                                ticker=tkr,
+                                docs_dir=DOCS_DIR,
+                                chunk_size=getattr(parameters, "chunk_size", 512),
+                                chunk_overlap=getattr(parameters, "chunk_overlap", 25),
+                            )
+                            if _TRACE:
+                                _LOG.info(f"[JIT] hot_insert inserted={inserted} chunks for {tkr}")
+                        except Exception as e:
+                            _LOG.warning(f"[JIT] hot_insert error: {e!r}")
+
                 except Exception as e:
-                    if _TRACE:
-                        _LOG.warning(f"[DBG] JIT.ensure_company_indexed error: {e!r}")         
-            # Log current index stats to confirm how many docs/chunks are loaded in memory
+                    # Keep running even if JIT fails; we'll still try RAG with whatever we have
+                    _LOG.warning(f"[JIT] ensure_company_indexed error: {e!r}")
+
+            # --- D) Log current index stats for visibility (helps you see live index size drift) ---
             try:
                 stats = getattr(getattr(index, "_collection", None), "count", lambda: "?")()
             except Exception:
                 stats = "?"
-            _LOG.info(f"[INDEX] Current docs in memory: {stats}")
+            _LOG.info(f"[INDEX] docs_in_memory={stats}, used_jit={used_jit}")
+
+            # --- E) First retrieval (after possible JIT/hot-insert) ---
+            # Anchor query with ticker + finance hints to reduce cross-company hits.
+            anchor_terms   = "operating income operating margin results of operations md&a exhibit 99"
+            anchored_query = f"{refined_query} {tkr} {anchor_terms}" if tkr else refined_query
 
             retrieved_contents, sources = index.similarity_search_with_threshold(
-                query=refined_query, k=parameters.k, threshold=0.05, exclude_tools=True
+                query=anchored_query,
+                k=parameters.k,
+                threshold=0.05,
+                exclude_tools=True,
             )
             if _TRACE:
-                _LOG.info(f"[DBG] RAG.retrieved={len(retrieved_contents)}")
+               _LOG.info(f"[DBG] RAG.retrieved={len(retrieved_contents)} (used_jit={used_jit})")
 
+            # Same-company-first rerank (uses your build_ticker_meta_tools.rerank)
+            def _realign_sources(_docs: list[Document], _sources: list[dict]) -> list[dict]:
+                """Realign sources to docs by matching source/filepath key."""
+                if not _docs or not _sources:
+                    return _sources
+
+                def key(meta): 
+                    return (meta or {}).get("source") or (meta or {}).get("filepath") or ""
+
+                # map: key → list of indices
+                mp = {}
+                for i, s in enumerate(_sources):
+                    mp.setdefault(key(s), []).append(i)
+
+                aligned = []
+                for d in _docs:
+                    k = key(d.metadata)
+                    if k in mp and mp[k]:
+                        i = mp[k].pop(0)  # ✅ pop the index, not the whole list
+                        aligned.append(_sources[i])
+                    else:
+                        aligned.append({"source": k, "score": 0.0})
+
+                return aligned
+
+
+            if tkr and retrieved_contents:
+                _, rerank = build_ticker_meta_tools(tkr)
+                retrieved_contents = rerank(
+                    retrieved_contents,
+                    top_k=parameters.k,
+                    keywords=["operating income", "operating margin", "md&a", "exhibit 99"],
+                )
+                sources = _realign_sources(retrieved_contents, sources)
+
+            # --- F) Cheap retry once if JIT used and still nothing ---
+            if not retrieved_contents and used_jit:
+                if _TRACE:
+                    _LOG.info("[DBG] RAG.empty_after_jit → retry once with anchored query")
+                retrieved_contents, sources = index.similarity_search_with_threshold(
+                    query=anchored_query,
+                    k=parameters.k,
+                    threshold=0.05,
+                    exclude_tools=True,
+                )
+                if tkr and retrieved_contents:
+                    _, rerank = build_ticker_meta_tools(tkr)
+                    retrieved_contents = rerank(
+                        retrieved_contents,
+                        top_k=parameters.k,
+                        keywords=["operating income", "operating margin", "md&a", "exhibit 99"],
+                    )
+                    sources = _realign_sources(retrieved_contents, sources)
+                if _TRACE:
+                    _LOG.info(f"[DBG] RAG.retry_retrieved={len(retrieved_contents)}")
+
+
+            # --- G) Fallback to Claude only when retrieval truly fails ---
             if not retrieved_contents:
                 set_route("CLAUDE")
                 with st.chat_message("assistant"):
@@ -744,6 +915,15 @@ def main(parameters) -> None:
         # 4) Streaming answer bubble
         start_time = time.time()
 
+        # --- Helper: are all retrieved docs 8-K? (case-insensitive, checks source/filepath) ---
+        def _all_are_8k(docs: list) -> bool:
+            if not docs:
+                return False
+            def _src(d):
+                md = (d.metadata or {})
+                return (md.get("source") or md.get("filepath") or "").lower()
+            return all("8-k" in _src(d) for d in docs)
+
         # Apply citation rules only when retrieval is used
         CITATION_ROUTES = {"RAG", "HYBRID", "HYBRID JIT", "JIT→RAG"}
         use_citation = st.session_state.get("last_route") in CITATION_ROUTES
@@ -751,16 +931,24 @@ def main(parameters) -> None:
             _LOG.info(f"[DBG] streaming: citation={use_citation}, route={st.session_state.get('last_route')}")
             _LOG.info(f"[DBG] facts_md: len={len(facts_md or '')}, sha1={hashlib.sha1((facts_md or '').encode('utf-8')).hexdigest()[:10]}")
 
+        # Extra guardrails when only 8-K is available
+        extra_rules = ""
+        if use_citation and _all_are_8k(retrieved_contents):
+            extra_rules = (
+                "\nIf 10-Q is not available, answer using 8-K (e.g., Exhibit 99.x press release) "
+                "and cite it explicitly. Do not add disclaimers about lacking 10-Q."
+            )
+
         # Build task text; inject TOOL FACT so the model must see it
         task_for_model = (
-            f"{user_input}\n\n[TOOL FACT]\n{facts_md}\n\n[CITATION RULES]\n{CITATION_RULES}"
+            f"{user_input}\n\n[TOOL FACT]\n{facts_md}\n\n[CITATION RULES]\n{CITATION_RULES}{extra_rules}"
             if use_citation else user_input
         )
 
         with st.chat_message("assistant"):
             message_placeholder = st.empty()  # single, reusable area
 
-            # ---------- Helpers (HTML-safe rendering + glue fixes + YoY guard) ----------
+            # Helpers (HTML-safe rendering + glue fixes + YoY guard)
             def _fix_glue(s: str) -> str:
                 s = unicodedata.normalize("NFKC", s).replace("\u00A0", " ")
                 s = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", s)     # 5.62The -> 5.62 The
@@ -793,7 +981,7 @@ def main(parameters) -> None:
                             "Ask me to fetch both periods and I’ll include them clearly.")
                 return s
 
-            # ---------- Build model context (TOOL FACT as highest-priority virtual doc) ----------
+            # Build model context (TOOL FACT as highest-priority virtual doc)
             context_docs: list[Document] = []
             if facts_md:
                 context_docs.append(
@@ -809,7 +997,7 @@ def main(parameters) -> None:
                 _LOG.info(f"[DBG] context_docs: count={len(context_docs)}, head_source={head_src}")
                 _LOG.info(f"[DBG] task_for_model[:300]={task_for_model[:300]!r}")
 
-            # ---------- Generate with sentence-buffered streaming (single placeholder) ----------
+            # Generate with sentence-buffered streaming (single placeholder)
             with st.spinner("Generating financial insight from documents and chat history…"):
                 streamer, fmt_prompts = answer_with_context(
                     llm, ctx_synthesis_strategy, task_for_model, chat_history, context_docs
@@ -854,7 +1042,6 @@ def main(parameters) -> None:
             "render": "html",
             "html": html_out,       # exact HTML used above
         })
-
         logging.getLogger(__name__).info(f"\n--- Took {time.time() - start_time:.2f} seconds ---")
 
 # Step 7: Command-line interface (CLI) for financial RAG chatbot

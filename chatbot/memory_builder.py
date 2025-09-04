@@ -14,21 +14,16 @@ from chatbot.helpers.log import get_logger
 
 logger = get_logger(__name__)
 
-# Index path guard (early check) 
+# Init logging and show target index path (do NOT fail if it doesn't exist)
 logging.basicConfig(level=logging.INFO)
 INDEX_DIR = Path(os.getenv("INDEX_PATH", "vector_store/docs_index"))
-logging.info(f"[INIT] Using index path: {INDEX_DIR.resolve()}")
-if not INDEX_DIR.exists():
-    raise RuntimeError(f"[ERR] Index directory missing: {INDEX_DIR.resolve()} "
-                       f"— run memory_builder to create it.")
+logging.info(f"[INIT] Target index path (will be created if missing): {INDEX_DIR.resolve()}")
 
+# Load all Markdown files under docs_path (recursive).
 def load_documents(docs_path: Path) -> list[Document]:
     """
-    Load all Markdown files under docs_path (recursive).
-
     Args:
         docs_path (Path): The path to the documents.
-
     Returns:
         List[Document]: A list of loaded documents.
     """
@@ -40,26 +35,36 @@ def load_documents(docs_path: Path) -> list[Document]:
     )
     return loader.load()
 
+# Lightweight loader for JIT: read *.md as-is and wrap into Document objects.
+def load_markdown_docs(docs_dir: Path) -> list[Document]:
+    documents: list[Document] = []
+    for md_file in docs_dir.rglob("*.md"):
+        try:
+            text = md_file.read_text(encoding="utf-8")
+            documents.append(
+                Document(page_content=text, metadata={"source": str(md_file), "filepath": str(md_file)})
+            )
+        except Exception as e:
+            logger.warning(f"[load_markdown_docs] Failed to read {md_file}: {e!r}")
+    logger.info(f"[load_markdown_docs] Loaded {len(documents)} markdown files from {docs_dir}")
+    return documents
 
 # Metadata helpers
+# Infer ticker & form from filename like: AAPL_10-Q_2025-08-01.md  /  TSLA_8-K_2025-07-23.md
 def infer_org_form(file_name: str) -> tuple[str, str]:
-    """
-    Infer ticker & form from filename like:
-    AAPL_10-Q_2025-08-01.md  /  TSLA_8-K_2025-07-23.md
-    """
     stem = Path(file_name).stem
     parts = stem.split("_", 2)  # [TICKER, FORM, ...]
     org  = parts[0].upper() if parts else ""
     form = parts[1].upper() if len(parts) > 1 else ""
     return org, form
 
+# Parse the ingest header from ingest_pipeline.
 def parse_header(md_text: str) -> Dict[str, str]:
     """
-    Parse the simple header written by ingest_pipeline:
+    Parse the simple ingest header (first ~40 lines) expected from ingest_pipeline:
       - **Date**: YYYY-MM-DD
       - **Source**: <URL>
       - **Title**: ...
-    Only scan the first ~40 lines for speed.
     """
     date = source = title = ""
     for i, line in enumerate(md_text.splitlines()):
@@ -75,10 +80,8 @@ def parse_header(md_text: str) -> Dict[str, str]:
             title = line.split(":", 1)[1].strip()
     return {"date": date, "source": source, "title": title}
 
+# Build lightweight, consistent metadata for scoring/filters & citations.
 def normalize_metadata(file_path: Path, md_text: str, base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Build lightweight, consistent metadata for scoring/filters & citations.
-    """
     org, form = infer_org_form(file_path.name)
     hdr = parse_header(md_text)
     fiscal_year = (hdr["date"][:4] if hdr["date"] else "")
@@ -94,15 +97,14 @@ def normalize_metadata(file_path: Path, md_text: str, base: Optional[Dict[str, A
     })
     return meta
 
+# Splits a list of financial documents into smaller chunks.
 def split_chunks(sources: list, chunk_size: int = 512, chunk_overlap: int = 25) -> list:
     """
-    Splits a list of financial documents into smaller chunks.
-
     Args:
         sources (List): The list of source documents.
         chunk_size (int): Max size of each chunk.
         chunk_overlap (int): Overlap between chunks to preserve context.
-
+    
     Returns:
         List: Chunks of financial content.
     """
@@ -135,6 +137,12 @@ def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int,
     logger.info(f"Loading documents from: {docs_path}")
     sources = load_documents(docs_path)
     logger.info(f"Number of loaded documents: {len(sources)}")
+    
+    if not sources:
+        logger.warning(f"[INDEX BUILDER] No markdown files found under {docs_path}. Nothing to index.")
+        return
+    # Ensure the index directory exists (critical fix so first-time build doesn't fail)
+    Path(vector_store_path).mkdir(parents=True, exist_ok=True)
 
     logger.info("Chunking documents...")
     splitter = create_recursive_text_splitter(
@@ -147,7 +155,6 @@ def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int,
 
     for src in sources:
         md_text = src.page_content or ""
-
         # Prefer local file path if available; fall back to 'source' only when it's not a URL.
         src_path_str = (
             src.metadata.get("filepath")
@@ -159,15 +166,12 @@ def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int,
             or ""
         )
         file_path = Path(src_path_str) if src_path_str else Path("unknown.md")
-
         # Normalize metadata using filename + header
         meta = normalize_metadata(file_path, md_text, base=src.metadata)
-
         # Body after header separator (avoid indexing the header itself)
         body = md_text.split("\n---\n", 1)[1] if "\n---\n" in md_text else md_text
         if not body.strip():
             continue
-
         # Split BODY and attach the same normalized metadata to each chunk
         for piece in splitter.split_text(body):
             if piece.strip():
@@ -184,7 +188,7 @@ def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int,
     f"chunk_size={chunk_size}, overlap={chunk_overlap} -> {vector_store_path}")
     logger.info("Memory Index has been created successfully!")
 
-
+# CLI test
 def get_args() -> argparse.Namespace:
     """
     Parse CLI arguments for chunking.
@@ -207,36 +211,10 @@ def get_args() -> argparse.Namespace:
         required=False,
         default=25,
     )
-
     return parser.parse_args()
 
-
-# CLI test
-def get_args() -> argparse.Namespace:
-    """
-    Parse CLI arguments for chunking.
-    """
-    parser = argparse.ArgumentParser(description="Memory Builder for Financial Documents")
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
-        help="The maximum size of each chunk. Defaults to 512.",
-        required=False,
-        default=512,
-    )
-    parser.add_argument(
-        "--chunk-overlap",
-        type=int,
-        help="The amount of overlap between consecutive chunks. Defaults to 25.",
-        required=False,
-        default=25,
-    )
-    return parser.parse_args()
-
+#  Main entry point: builds memory index from docs/.
 def main(parameters):
-    """
-    Main entry point: builds memory index from docs/.
-    """
     root_folder = Path(__file__).resolve().parent.parent  # project root (adjust if needed)
     docs_path = root_folder / "docs"
     vector_store_path = root_folder / "vector_store" / "docs_index"

@@ -250,9 +250,9 @@ You should see matching outputs for these examples:
 ### ⚡ JIT Retrieval-based (RAG) — Just-in-time Tests
 > **Note:** These companies/questions are **not** in `PRELOAD` and have no pre-generated `.md` files. UI testing will trigger live JIT ingestion (SEC EDGAR / IR / slides).
 
-* *Explain why **NVDA** EPS changed in **FY2024 Q2** (quote sources).*
-* *Summarize **Amazon’s latest Q1 2024 earnings call** highlights with citations.*
-* *Compare **Netflix** streaming revenue between **2023** and **2024**, with sources.*
+* *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?*
+* *What risks did Netflix highlight in its Q1 2025 10-Q?*
+* *What drove Adobe’s Digital Media ARR growth in Q2 2025 according to its 8-K?*
 ---
 #### 🔄 After JIT Ingestion — Sync New Docs
 Run these steps to rebuild the vector index after JIT files are saved into `docs/`:

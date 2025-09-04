@@ -6,13 +6,12 @@ import functools
 import logging
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
+import unicodedata
 import requests
 import yfinance as yf
 from dotenv import load_dotenv
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Setup
-# ──────────────────────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -20,15 +19,12 @@ load_dotenv()
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 EDGAR_USER_AGENT = os.getenv("EDGAR_USER_AGENT") or "finance-bot/1.0"
-
 SEC_HEADERS = {"User-Agent": EDGAR_USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 
-# ──────────────────────────────────────────────────────────────────────────────
 # SEC mapping & ticker/CIK utils
-# ──────────────────────────────────────────────────────────────────────────────
+# Return [{'ticker': 'AAPL', 'title': 'apple inc.', 'cik': '0000320193'}, ...].
 @functools.lru_cache(maxsize=1)
 def _load_sec_ticker_map() -> list[dict]:
-    """Return [{'ticker': 'AAPL', 'title': 'apple inc.', 'cik': '0000320193'}, ...]."""
     url = "https://www.sec.gov/files/company_tickers.json"
     resp = requests.get(url, headers=SEC_HEADERS, timeout=20)
     resp.raise_for_status()
@@ -38,41 +34,117 @@ def _load_sec_ticker_map() -> list[dict]:
         for v in raw.values()
     ]
 
-_STOP = {"ME", "I", "US", "THE", "AND", "FOR", "EPS", "PE", "ROE", "FCF", "SEC", "IR"}
-_MEDIA = {"CNBC", "BLOOMBERG", "REUTERS", "WSJ", "YAHOO", "FINANCE", "MARKETWATCH", "SEEKINGALPHA"}
+_STOP  = {"ME","I","US","THE","AND","FOR","EPS","PE","ROE","FCF","SEC","IR","Q","FY","FQ","YOY",
+    "GAAP","NONGAAP","NON-GAAP"}
+_MEDIA = {"CNBC","BLOOMBERG","REUTERS","WSJ","YAHOO","FINANCE","MARKETWATCH","SEEKINGALPHA","NYSE","NASDAQ","AMEX","ARCA"}
 
-def resolve_ticker_from_query(query: str) -> Optional[str]:
-    """Safe ticker resolve: explicit → ALL-CAPS (2–5) → whole-word company name; all validated by SEC list."""
+# Resolve ticker from free text: explicit → ALL-CAPS → SEC name match → unique brand token.
+def resolve_ticker_sec(query: str) -> Optional[str]:
+    """
+    Robust ticker resolver:
+      1) explicit tickers like $AAPL / NASDAQ:CRM / (GOOGL) / BRK-B / BF.B
+      2) ALL-CAPS 2–5 letters (+ optional -/. class): BRK-B, BF.B
+      3) SEC company name match (full title and 'main name' w/o Inc/Corp/Ltd/…)
+      4) single capitalized token that uniquely prefixes a SEC 'main name' (e.g., 'Salesforce' → CRM)
+    All candidates are validated against SEC list and filtered by STOP/MEDIA.
+    """
+
     if not query:
+        logger.debug("[TICKER] empty query")
         return None
+
+    raw = query
+    # normalize curly quotes & possessive 's
+    q = unicodedata.normalize("NFKC", raw).replace("’", "'").replace("`", "'")
+    q = re.sub(r"'\s*s\b", "", q)   # Salesforce’s → Salesforce
+    q_low = q.lower()
+
+    logger.debug(f"[TICKER] raw='{raw}'")
+    logger.debug(f"[TICKER] normalized='{q}'")
+
     rows = _load_sec_ticker_map()
     valid = {r["ticker"] for r in rows}
-    qlow = (query or "").lower()
 
-    # 1) explicit: $AAPL / NASDAQ:AAPL / (AAPL)
-    m = re.search(r'(?:(?:\$)|(?:nasdaq:)|(?:nyse:)|(?:amex:)|(?:arca:))?(\b[A-Za-z]{2,5}\b)', query, re.I)
-    if m:
+    # ---------- 1) explicit patterns ----------
+    explicit_pat = re.compile(r'(?i)\b(?:\$|nasdaq:|nyse:|amex:|arca:)?([A-Za-z]{1,5}(?:[-.][A-Za-z]{1,2})?)\b')
+    for m in explicit_pat.finditer(q):
         cand = m.group(1).upper()
+        logger.debug(f"[TICKER] stage1 explicit cand={cand}")
         if cand in valid and cand not in _STOP and cand not in _MEDIA:
+            logger.debug(f"[TICKER] ACCEPT explicit -> {cand}")
             return cand
+        else:
+            logger.debug(f"[TICKER] REJECT explicit {cand} (valid={cand in valid}, stop={cand in _STOP}, media={cand in _MEDIA})")
 
-    # 2) ALL-CAPS tokens (2–5)
-    for t in re.findall(r"\b[A-Z]{2,5}\b", query or ""):
+    # ---------- 2) ALL-CAPS ----------
+    caps = re.findall(r"\b[A-Z]{2,5}(?:[-.][A-Z]{1,2})?\b", q)
+    logger.debug(f"[TICKER] stage2 allcaps candidates={caps}")
+    for t in caps:
         if t in valid and t not in _STOP and t not in _MEDIA:
+            logger.debug(f"[TICKER] ACCEPT allcaps -> {t}")
             return t
+        else:
+            logger.debug(f"[TICKER] REJECT allcaps {t}")
 
-    # 3) whole-word company name
+    # ---------- build SEC name index ----------
+    def strip_suffixes(name: str) -> str:
+        n = re.sub(r",?\s+(incorporated|inc|corp|corporation|co|company|ltd|plc|nv|sa|ag|holdings|group)\.?\b", "", name, flags=re.I)
+        n = re.sub(r"^\s*the\s+", "", n, flags=re.I)
+        return re.sub(r"\s{2,}", " ", n).strip()
+
+    name_idx: Dict[str, str] = {}
+    main_list: list[tuple[str, str]] = []
     for r in rows:
-        name = r["title"]
-        main = name.split(",")[0].strip()
-        if (re.search(rf"\b{re.escape(name)}\b", qlow) or (main and re.search(rf"\b{re.escape(main)}\b", qlow))):
-            return r["ticker"]
+        title = (r["title"] or "").strip().lower()
+        if not title: 
+            continue
+        main = strip_suffixes(title)
+        name_idx[title] = r["ticker"]
+        name_idx[main] = r["ticker"]
+        main_list.append((main, r["ticker"]))
+
+    # ---------- 3) company name match ----------
+    for name in sorted(name_idx.keys(), key=len, reverse=True):
+        if len(name) < 4:
+            continue
+        if re.search(rf"\b{re.escape(name)}\b", q_low):
+            tk = name_idx[name]
+            if tk in valid:
+                logger.debug(f"[TICKER] ACCEPT name_match '{name}' -> {tk}")
+                return tk
+            else:
+                logger.debug(f"[TICKER] REJECT name_match '{name}' (not valid)")
+
+    # ---------- 4) unique prefix match ----------
+    tokens = re.findall(r"\b([A-Z][a-z]{3,})\b", q)
+    logger.debug(f"[TICKER] stage4 tokens={tokens}")
+    if tokens:
+        for tok in tokens:
+            tl = tok.lower()
+            hits = [(m, tk) for (m, tk) in main_list if m.startswith(tl)]
+            logger.debug(f"[TICKER] probe token={tok} hits={hits}")
+            if len(hits) == 1:
+                logger.debug(f"[TICKER] ACCEPT prefix {tok} -> {hits[0][1]}")
+                return hits[0][1]
+
+    logger.debug("[TICKER] result=NONE")
     return None
 
-_CIK_CACHE: Dict[str, str] = {}
-
+# CIK cache 
+_CIK_CACHE: Dict[str,str] = {}
 def get_cik_from_ticker(ticker: str) -> Optional[str]:
-    """Resolve CIK (10-digit) via SEC mapping, with a small in-memory cache."""
+    if not ticker: return None
+    sym = ticker.upper().strip()
+    if sym in _CIK_CACHE: return _CIK_CACHE[sym]
+    for r in _load_sec_ticker_map():
+        if r["ticker"] == sym:
+            _CIK_CACHE[sym] = r["cik"]
+            return r["cik"]
+    logger.warning("CIK not found in SEC mapping for ticker=%s", sym)
+    return None
+
+# Resolve CIK (10-digit) via SEC mapping, with a small in-memory cache.
+def get_cik_from_ticker(ticker: str) -> Optional[str]:
     if not ticker:
         return None
     sym = ticker.upper().strip()
@@ -85,9 +157,7 @@ def get_cik_from_ticker(ticker: str) -> Optional[str]:
     logger.warning("CIK not found in SEC mapping for ticker=%s", sym)
     return None
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Stock price / News (Tools)
-# ──────────────────────────────────────────────────────────────────────────────
 def get_stock_price_alpha_vantage(ticker: str) -> Optional[Dict[str, Any]]:
     try:
         if not ALPHA_VANTAGE_API_KEY:
@@ -127,9 +197,7 @@ def get_financial_news(query: str) -> List[Dict[str, str]]:
         logger.error("NewsAPI fetch error: %s", e)
         return []
 
-# ──────────────────────────────────────────────────────────────────────────────
 # SEC metric (Tools)
-# ──────────────────────────────────────────────────────────────────────────────
 _GAAP = {
     "eps": "EarningsPerShareDiluted",
     "revenue": "Revenues",
@@ -195,9 +263,7 @@ def get_financial_metric(ticker: str, year: int, metric: str, quarter: Optional[
         logger.error("EDGAR metric fetch error: %s", e)
         return None
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Filing citation snippets (local .md from ingest_pipeline)
-# ──────────────────────────────────────────────────────────────────────────────
 _SECTION_HINTS = ("md&a", "management’s discussion", "management's discussion", "results of operations", "outlook", "guidance")
 _NUMBER_HINT = re.compile(r"(\d{1,3}(,\d{3})+|\d+\.\d+|\d+)%|\$\s?\d+(\.\d+)?\s?(b|bn|m|mm|thousand)?", re.I)
 
@@ -240,13 +306,11 @@ def get_filing_citation_snippets(ticker: str, limit: int = 6) -> list[dict]:
                     return out
     return out
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Tiny routing helpers (kept for app Step-5 brevity)
-# ──────────────────────────────────────────────────────────────────────────────
 _PRICE_RE   = re.compile(r"\b(price|quote|share price|trading|last|close)\b", re.I)
 _METRIC_RE  = re.compile(r"\b(eps|earnings per share|revenue|net income|operating (margin|income)|gross margin)\b", re.I)
-_EXPLAIN_RE = re.compile(r"\b(why|explain|reason|driver|cause|impact|背景|原因|解讀|說明)\b", re.I)
-_COMPARE_RE = re.compile(r"\b(compare|vs\.?|versus|對比)\b", re.I)
+_EXPLAIN_RE = re.compile(r"\b(why|explain|reason|driver|cause|impact)\b", re.I)
+_COMPARE_RE = re.compile(r"\b(compare|vs\.?|versus)\b", re.I)
 _CALL_RE    = re.compile(r"\b(earnings call|conference call|prepared remarks)\b", re.I)
 
 def parse_year(q: str) -> Optional[str]:
@@ -289,14 +353,11 @@ def compose_metric_header(payload: Dict[str, Any]) -> str:
     if note: header += f"  \n_Note: {note}_"
     return header
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Simple CLI smoke (optional)
-# ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("Price:", get_stock_price("AAPL"))
     print("News (MSFT):", get_financial_news("MSFT earnings"))
     print("Metric (TSLA EPS Q4 2023):", get_financial_metric("TSLA", 2023, "eps", 4))
-    
 
 # CLI test (for local testing)
 if __name__ == "__main__":
