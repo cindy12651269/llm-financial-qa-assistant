@@ -1,10 +1,11 @@
-# chatbot/financial_fetcher.py
 import os
 import re
+import json
 import glob
 import functools
 import logging
 from pathlib import Path
+from entities.document import Document
 from typing import Optional, List, Tuple, Dict, Any
 import unicodedata
 import requests
@@ -65,7 +66,7 @@ def resolve_ticker_sec(query: str) -> Optional[str]:
     rows = _load_sec_ticker_map()
     valid = {r["ticker"] for r in rows}
 
-    # ---------- 1) explicit patterns ----------
+    # 1) explicit patterns 
     explicit_pat = re.compile(r'(?i)\b(?:\$|nasdaq:|nyse:|amex:|arca:)?([A-Za-z]{1,5}(?:[-.][A-Za-z]{1,2})?)\b')
     for m in explicit_pat.finditer(q):
         cand = m.group(1).upper()
@@ -76,7 +77,7 @@ def resolve_ticker_sec(query: str) -> Optional[str]:
         else:
             logger.debug(f"[TICKER] REJECT explicit {cand} (valid={cand in valid}, stop={cand in _STOP}, media={cand in _MEDIA})")
 
-    # ---------- 2) ALL-CAPS ----------
+    # 2) ALL-CAPS 
     caps = re.findall(r"\b[A-Z]{2,5}(?:[-.][A-Z]{1,2})?\b", q)
     logger.debug(f"[TICKER] stage2 allcaps candidates={caps}")
     for t in caps:
@@ -86,7 +87,7 @@ def resolve_ticker_sec(query: str) -> Optional[str]:
         else:
             logger.debug(f"[TICKER] REJECT allcaps {t}")
 
-    # ---------- build SEC name index ----------
+    # Build SEC name index
     def strip_suffixes(name: str) -> str:
         n = re.sub(r",?\s+(incorporated|inc|corp|corporation|co|company|ltd|plc|nv|sa|ag|holdings|group)\.?\b", "", name, flags=re.I)
         n = re.sub(r"^\s*the\s+", "", n, flags=re.I)
@@ -103,7 +104,7 @@ def resolve_ticker_sec(query: str) -> Optional[str]:
         name_idx[main] = r["ticker"]
         main_list.append((main, r["ticker"]))
 
-    # ---------- 3) company name match ----------
+    # 3) company name match 
     for name in sorted(name_idx.keys(), key=len, reverse=True):
         if len(name) < 4:
             continue
@@ -115,7 +116,7 @@ def resolve_ticker_sec(query: str) -> Optional[str]:
             else:
                 logger.debug(f"[TICKER] REJECT name_match '{name}' (not valid)")
 
-    # ---------- 4) unique prefix match ----------
+    # 4) unique prefix match 
     tokens = re.findall(r"\b([A-Z][a-z]{3,})\b", q)
     logger.debug(f"[TICKER] stage4 tokens={tokens}")
     if tokens:
@@ -352,6 +353,259 @@ def compose_metric_header(payload: Dict[str, Any]) -> str:
         header += f" — Calendar: **{cal_y or ''}{(' Q'+str(cal_q)) if cal_q else ''}**"
     if note: header += f"  \n_Note: {note}_"
     return header
+
+# Fetch latest stock price via financial_fetcher.get_stock_price
+def fallback_stock_lookup(query: str) -> List[Document]:
+    """
+    Only if the query looks like a price question and ticker is resolvable.
+    Adds metadata.source_type="tool" and a structured payload for API fast-path.
+    """
+    if not re.search(r'\b(price|stock|share|quote|trading|last|close)\b', query, re.I):
+        return []
+
+    ticker = resolve_ticker_sec(query)
+    if not ticker:
+        return []
+
+    data = get_stock_price(ticker)  # expected: {ticker, price(or value), as_of, source}
+    if not data:
+        return []
+
+    # Normalize value key and ensure it's present
+    value = data.get("value", data.get("price"))
+    if value is None:
+        return []
+
+    payload = {
+        "kind": "price",
+        "ticker": data.get("ticker", ticker),
+        "value": value,
+        "as_of": data.get("as_of"),
+        "source": data.get("source", "financial_fetcher"),
+        "raw": data,  # keep full raw for debugging
+    }
+
+    return [Document(
+        page_content=json.dumps(data),
+        metadata={
+            "source": "financial_fetcher",
+            "source_type": "tool",   # required for API fast-path
+            "organization": data.get("ticker", ticker),
+            "report_type": "API",
+            "payload": payload,      # fast-path reads this
+        }
+    )]
+
+# Fetch latest financial news for a resolved ticker if possible; otherwise use the raw query term.
+def fallback_news_lookup(query: str) -> List[Document]:
+    """
+    Adds metadata.source_type="tool" and a structured payload (kind="news", items=[...]).
+    """
+    if not re.search(r"\b(news|headline|headlines|latest news|top news)\b", query, re.I):
+        return []  
+    ticker = resolve_ticker_sec(query)
+    term = ticker if ticker else query
+
+    items = get_financial_news(term)  # list of dicts: {title, url, published_at, source?}
+    if not items:
+        return []
+
+    # Try to propagate the true source if present on items; else default label
+    news_source = None
+    for it in items:
+        if isinstance(it, dict) and it.get("source"):
+            news_source = it["source"]
+            break
+    news_source = news_source or "financial_fetcher"
+
+    payload = {
+        "kind": "news",
+        "items": items[:20],          # cap to a reasonable count
+        "source": news_source,
+        "query": term,
+    }
+
+    return [Document(
+        page_content=json.dumps({"items": items}),
+        metadata={
+            "source": "financial_fetcher",
+            "source_type": "tool",    # required for API fast-path
+            "organization": ticker or "",
+            "report_type": "API",
+            "payload": payload,       # fast-path reads this
+        }
+    )]
+
+# Simple metric resolver for Tools fast-path.
+# Supports FY/CY/bare year-quarter patterns; backend still queried on fiscal (FY) data.
+def fallback_financial_metric_lookup(query: str) -> list[Document]:
+    """
+    Tools fast-path with precise debug logs.
+    - Parses FY/CY/bare year-quarter
+    - Resolves ticker via resolve_ticker_sec()
+    - Detects metric (prefers operating income/margin first)
+    - Calls get_financial_metric()
+    - Returns a single tool Document with payload if found; otherwise [].
+    """
+    import re, json, logging
+
+    q_raw = (query or "").strip()
+    if not q_raw:
+        logging.info("[TOOL metric] empty query")
+        return []
+
+    # ---- 0) Quick gate: only run if we see any relevant metric keywords ----
+    METRIC_GATE = re.compile(
+        r"\b(eps|earnings\s+per\s+share|revenue|net\s+income|operating\s+(income|margin))\b",
+        re.I,
+    )
+    if not METRIC_GATE.search(q_raw):
+        logging.info("[TOOL metric] gate: no metric keyword in query=%r", q_raw)
+        return []
+
+    upper = q_raw.upper()
+    basis = "FY"        # default, unless CY/bare-year-quarter detected
+    year = quarter = None
+    cal_year = cal_quarter = None
+
+    # ---- 1) Parse period: FY2024 Q4 / Q4 FY2024 ----
+    m = (re.search(r"\bFY\s*(\d{2,4})\s*Q([1-4])\b", upper)
+         or re.search(r"\bQ([1-4])\s*FY\s*(\d{2,4})\b", upper))
+    if m:
+        if m.re.pattern.startswith(r"\bFY"):
+            y_raw, q_raw_num = m.group(1), m.group(2)
+        else:
+            q_raw_num, y_raw = m.group(1), m.group(2)
+        y = int(y_raw)
+        year = (2000 + y) if y < 100 else y
+        quarter = int(q_raw_num)
+        basis = "FY"
+    else:
+        # ---- 2) CY2024 Q4 / Q4 CY2024 ----
+        m = (re.search(r"\bCY\s*(\d{2,4})\s*Q([1-4])\b", upper)
+             or re.search(r"\bQ([1-4])\s*CY\s*(\d{2,4})\b", upper))
+        if m:
+            if m.re.pattern.startswith(r"\bCY"):
+                y_raw, q_raw_num = m.group(1), m.group(2)
+            else:
+                q_raw_num, y_raw = m.group(1), m.group(2)
+            y = int(y_raw)
+            year = (2000 + y) if y < 100 else y
+            quarter = int(q_raw_num)
+            basis = "CY"
+            cal_year, cal_quarter = year, quarter
+        else:
+            # ---- 3) bare 2024 Q4 / Q4 2024 → treat as CY ----
+            m = (re.search(r"\b(20\d{2})\s*Q([1-4])\b", upper)
+                 or re.search(r"\bQ([1-4])\s*(20\d{2})\b", upper))
+            if m:
+                if m.re.pattern.startswith(r"\b(20"):
+                    y_raw, q_raw_num = m.group(1), m.group(2)
+                else:
+                    q_raw_num, y_raw = m.group(1), m.group(2)
+                year = int(y_raw); quarter = int(q_raw_num)
+                basis = "CY"
+                cal_year, cal_quarter = year, quarter
+            else:
+                # ---- 4) just a year → default FY ----
+                y = re.search(r"\b(20\d{2})\b", upper)
+                year = int(y.group(1)) if y else None
+                quarter = None  # FY
+    if not year:
+        logging.info("[TOOL metric] period parse failed; no year found | query=%r", q_raw)
+        return []
+
+    # ---- 5) Resolve ticker (sanitize to avoid GAAP/EPS noise) ----
+    sanitized_for_ticker = re.sub(
+        r"(?i)\b(NON[-\s]?GAAP|GAAP|EPS|EARNINGS|FISCAL|CALENDAR|FY|CY|Q[1-4]|REVENUE|NET\s+INCOME|OPERATING\s+(INCOME|MARGIN))\b",
+        " ",
+        q_raw,
+    )
+    ticker = resolve_ticker_sec(sanitized_for_ticker)
+    if not ticker:
+        logging.info(
+            "[TOOL metric] ticker not resolved | raw=%r | sanitized=%r",
+            q_raw, sanitized_for_ticker
+        )
+        return []
+    logging.info("[TOOL metric] ticker=%s parsed_ok basis=%s year=%s quarter=%s",
+                 ticker, basis, year, quarter)
+
+    # ---- 6) Detect metric (priority: operating income → operating margin → EPS → revenue → net income) ----
+    metric = None
+    # operating income
+    if re.search(r"\boperating\s+income\b", q_raw, re.I):
+        metric = "operating_income"; why = "matched operating_income"
+    # operating margin
+    elif re.search(r"\boperating\s+margin\b", q_raw, re.I):
+        metric = "operating_margin"; why = "matched operating_margin"
+    # EPS
+    elif re.search(r"\b(eps|earnings\s+per\s+share)\b", q_raw, re.I):
+        metric = "eps"; why = "matched eps"
+    # revenue
+    elif re.search(r"\brevenue\b", q_raw, re.I):
+        metric = "revenue"; why = "matched revenue"
+    # net income
+    elif re.search(r"\bnet\s+income\b", q_raw, re.I):
+        metric = "net_income"; why = "matched net_income"
+
+    if not metric:
+        logging.info("[TOOL metric] metric keyword not found | query=%r", q_raw)
+        return []
+    logging.info("[TOOL metric] metric=%s (%s)", metric, why)
+
+    # ---- 7) Fetch from backend (FY-based data source) ----
+    try:
+        data = get_financial_metric(ticker, year, metric, quarter)
+    except Exception as e:
+        logging.info("[TOOL metric] backend error for ticker=%s metric=%s y=%s q=%s | %r",
+                     ticker, metric, year, quarter, e)
+        return []
+
+    if not data or data.get("value") is None:
+        logging.info("[TOOL metric] backend returned no data | ticker=%s metric=%s y=%s q=%s",
+                     ticker, metric, year, quarter)
+        return []
+
+    effective_quarter = data.get("quarter", quarter)
+    note = ""
+    if basis == "CY":
+        note = "requested calendar period; answered from fiscal data (SEC companyfacts)"
+
+    payload = {
+        "kind": "metric",
+        "basis": basis,
+        "ticker": data.get("ticker", ticker),
+        "metric": data.get("metric", metric),
+        "value": data.get("value"),
+        "year": data.get("year", year),
+        "quarter": effective_quarter,
+        "as_of": data.get("as_of"),
+        "source": data.get("source"),
+        "raw": data,
+        "calendar_year": cal_year,
+        "calendar_quarter": cal_quarter,
+        "note": note,
+    }
+
+    meta = {
+        "source": "financial_fetcher",
+        "source_type": "tool",
+        "organization": ticker,
+        "fiscal_year": str(year),
+        "report_type": "API",
+        "payload": payload,
+        "fiscal_basis": basis,
+    }
+    if effective_quarter:
+        meta["fiscal_quarter"] = f"Q{effective_quarter}"
+    if basis == "CY":
+        if cal_year: meta["calendar_year"] = str(cal_year)
+        if cal_quarter: meta["calendar_quarter"] = f"Q{cal_quarter}"
+
+    logging.info("[TOOL metric] OK | ticker=%s metric=%s basis=%s y=%s q=%s value=%r",
+                 ticker, metric, basis, year, effective_quarter, data.get("value"))
+    return [Document(page_content=json.dumps(data), metadata=meta)]
 
 # Simple CLI smoke (optional)
 if __name__ == "__main__":

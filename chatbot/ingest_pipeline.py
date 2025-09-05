@@ -1,5 +1,5 @@
 import os
-import time
+import re, time
 import requests
 from pathlib import Path
 from typing import List, Optional
@@ -57,53 +57,86 @@ def download_text_from_url(url: str) -> str:
 def ingest_ticker(ticker: str, forms: List[str], max_per_ticker: int, since: Optional[str] = None) -> int:
     """
     Ingest filings for a given stock ticker.
-    - Resolves the CIK via financial_fetcher
+    - Always names files as {TICKER}_{FORM}_{YYYY-MM-DD}.md (TICKER is the function arg)
+    - Resolves CIK via SEC map
     - Fetches recent filings metadata
     - Downloads & stores up to `max_per_ticker` filings matching given forms & date filter
     """
-    ticker_up = ticker.upper()
+   
+
+    ticker_up = (ticker or "").upper().strip()
+    if not ticker_up:
+        print("[skip] empty ticker")
+        return 0
+
+    # Ensure output directory exists
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Resolve CIK
     cik = get_cik_from_ticker(ticker_up)
     if not cik:
         print(f"[skip] CIK not found for {ticker_up}")
         return 0
 
+    # Fetch recent filings list
     filings = fetch_recent_filings_basic(cik)
     count = 0
+
+    # Normalize allowed forms (uppercased, exact match)
+    allowed_forms = {f.upper() for f in (forms or [])}
+
     for filing in filings:
-        if filing["form"] not in forms:
+        form = (filing.get("form") or "").upper()
+        fdate = filing.get("date") or ""
+        acc   = filing.get("acc") or ""
+        doc   = filing.get("doc") or ""
+
+        if form not in allowed_forms:
             continue
-        if since and filing["date"] < since:
+        if since and fdate and fdate < since:
             continue
 
-        doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{filing['acc']}/{filing['doc']}"
+        # Build SEC url
+        doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
+
+        # Download filing text (raw HTML/text OK; hot-insert will sanitize/convert if needed)
         try:
             text = download_text_from_url(doc_url)
         except Exception as e:
             print(f"[error] Failed to fetch {doc_url}: {e}")
             continue
 
-        # Save filing content as .md (minimal header + raw body)
+        # --- File naming is strictly from function arg ticker + normalized form ---
+        safe_form = re.sub(r"[^A-Z0-9\-]+", "_", form)  # keep only A–Z/0–9/-
+        safe_date = re.sub(r"[^0-9\-]", "", fdate)       # YYYY-MM-DD
+        out_name  = f"{ticker_up}_{safe_form}_{safe_date}.md"
+        out_path  = OUTPUT_DIR / out_name
+
+        # Minimal header + raw body (downstream hot-insert can convert HTML→MD)
         header = (
-            f"# {ticker_up} — {filing['form']}\n\n"
-            f"- **Date**: {filing['date']}\n"
+            f"# {ticker_up} — {form}\n\n"
+            f"- **Date**: {fdate}\n"
             f"- **Source**: <{doc_url}>\n"
             f"- **Title**: {filing.get('desc','') or '(no title)'}\n\n"
             f"---\n\n"
         )
-        out_path = OUTPUT_DIR / f"{ticker_up}_{filing['form']}_{filing['date']}.md"
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(header)
-            f.write(text)  # keep raw HTML/text; no conversion
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(header)
+                f.write(text)
+            print(f"[ok] Saved {out_path}")
+            count += 1
+        except Exception as e:
+            print(f"[error] Failed to write {out_path}: {e}")
+            continue
 
-        count += 1
-        print(f"[ok] Saved {out_path}")
-
-        if count >= max_per_ticker:   
+        if count >= max_per_ticker:
             break
 
-        time.sleep(0.5)               
-    return count                       # Don't return None
+        # polite SEC pacing
+        time.sleep(0.5)
 
+    return count
 
 # RAG-focused CLI smoke test 
 def rag_cli_smoke_test() -> None:

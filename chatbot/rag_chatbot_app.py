@@ -4,7 +4,6 @@ import hashlib
 import argparse
 import sys
 import time
-import json
 import threading
 from pathlib import Path
 from entities.document import Document
@@ -24,8 +23,8 @@ from chatbot.bot.memory.embedder import Embedder
 from chatbot.bot.memory.vector_database.chroma import Chroma
 from chatbot.bot.model.model_registry import get_model_settings, get_models
 from chatbot.financial_fetcher import (
-    resolve_ticker_sec,get_stock_price, get_financial_news, 
-    get_financial_metric, compose_metric_header
+    resolve_ticker_sec, get_financial_metric, compose_metric_header,
+    fallback_news_lookup, fallback_stock_lookup, fallback_financial_metric_lookup
 )
 from chatbot.ingest_pipeline import ingest_ticker
 from claude_api import call_claude_fallback, SYS_PROMPT
@@ -217,252 +216,6 @@ def load_index(vector_store_path: Path) -> Chroma:
     index = Chroma(persist_directory=str(vector_store_path), embedding=embedding)
     return index
 
-# Strict ticker extraction & resolution 
-_TICKER_BLACKLIST = {
-    "I","ME","MY","US","USA","EPS","PE","ROE","YOY","QOQ","FY","Q","THE","A","AN","AND",
-    "WHAT","IS","PRICE","STOCK","ON","IN","FOR","OF"
-}
-
-_COMMON_NAME_MAP = {
-    "apple": "AAPL",
-    "tesla": "TSLA",
-    "microsoft": "MSFT",
-    "google": "GOOGL",
-    "alphabet": "GOOGL",
-    "amazon": "AMZN",
-    "meta": "META",
-    "facebook": "META",
-    "nvidia": "NVDA",
-}
-
-# Keep original case; only pick explicit uppercase tokens or cashtags
-def extract_possible_tickers(query: str) -> list[str]:
-    cashtags = [m.group(1).upper() for m in re.finditer(r'(?<!\w)\$([A-Za-z]{1,5})\b', query)]
-    uppercase_tokens = re.findall(r'\b[A-Z]{1,5}\b', query)
-    tickers = {t for t in (cashtags + uppercase_tokens) if t not in _TICKER_BLACKLIST}
-    return list(tickers)
-
-def resolve_ticker_from_query(query: str) -> str | None:
-    # 1) Try cashtags/explicit tickers
-    candidates = extract_possible_tickers(query)
-    if candidates:
-        # If multiple, pick the first that isn't “A”, “I”, etc. (already filtered)
-        return sorted(candidates, key=len, reverse=True)[0]
-    # 2) Try company-name map
-    qlow = query.lower()
-    for name, tkr in _COMMON_NAME_MAP.items():
-        if name in qlow:
-            return tkr
-    return None
-
-# Fetch latest stock price via financial_fetcher.get_stock_price
-def fallback_stock_lookup(query: str) -> List[Document]:
-    """
-    Only if the query looks like a price question and ticker is resolvable.
-    Adds metadata.source_type="tool" and a structured payload for API fast-path.
-    """
-    if not re.search(r'\b(price|stock|share|quote|trading|last|close)\b', query, re.I):
-        return []
-
-    ticker = resolve_ticker_from_query(query)
-    if not ticker:
-        return []
-
-    data = get_stock_price(ticker)  # expected: {ticker, price(or value), as_of, source}
-    if not data:
-        return []
-
-    # Normalize value key and ensure it's present
-    value = data.get("value", data.get("price"))
-    if value is None:
-        return []
-
-    payload = {
-        "kind": "price",
-        "ticker": data.get("ticker", ticker),
-        "value": value,
-        "as_of": data.get("as_of"),
-        "source": data.get("source", "financial_fetcher"),
-        "raw": data,  # keep full raw for debugging
-    }
-
-    return [Document(
-        page_content=json.dumps(data),
-        metadata={
-            "source": "financial_fetcher",
-            "source_type": "tool",   # required for API fast-path
-            "organization": data.get("ticker", ticker),
-            "report_type": "API",
-            "payload": payload,      # fast-path reads this
-        }
-    )]
-
-# Fetch latest financial news for a resolved ticker if possible; otherwise use the raw query term.
-def fallback_news_lookup(query: str) -> List[Document]:
-    """
-    Adds metadata.source_type="tool" and a structured payload (kind="news", items=[...]).
-    """
-    if not re.search(r"\b(news|headline|headlines|latest news|top news)\b", query, re.I):
-        return []  
-    ticker = resolve_ticker_from_query(query)
-    term = ticker if ticker else query
-
-    items = get_financial_news(term)  # list of dicts: {title, url, published_at, source?}
-    if not items:
-        return []
-
-    # Try to propagate the true source if present on items; else default label
-    news_source = None
-    for it in items:
-        if isinstance(it, dict) and it.get("source"):
-            news_source = it["source"]
-            break
-    news_source = news_source or "financial_fetcher"
-
-    payload = {
-        "kind": "news",
-        "items": items[:20],          # cap to a reasonable count
-        "source": news_source,
-        "query": term,
-    }
-
-    return [Document(
-        page_content=json.dumps({"items": items}),
-        metadata={
-            "source": "financial_fetcher",
-            "source_type": "tool",    # required for API fast-path
-            "organization": ticker or "",
-            "report_type": "API",
-            "payload": payload,       # fast-path reads this
-        }
-    )]
-
-# Simple metric resolver for Tools fast-path.
-# Supports FY/CY/bare year-quarter patterns; backend still queried on fiscal (FY) data.
-def fallback_financial_metric_lookup(query: str) -> List[Document]:
-    if not re.search(r"\b(eps|earnings per share|revenue|net income|operating (income|margin))\b", query, re.I):
-        return []
-    text = query.strip()
-    upper = text.upper()
-
-    # Parse year & quarter and decide basis
-    basis = "FY"          # default FY unless we clearly see CY or bare-year-quarter
-    year = quarter = None
-    cal_year = cal_quarter = None
-
-    # FY2024 Q4 / Q4 FY2024
-    m = re.search(r"\bFY\s*(\d{2,4})\s*Q([1-4])\b", upper) or re.search(r"\bQ([1-4])\s*FY\s*(\d{2,4})\b", upper)
-    if m:
-        if m.re.pattern.startswith(r"\bFY"):
-            y_raw, q_raw = m.group(1), m.group(2)
-        else:
-            q_raw, y_raw = m.group(1), m.group(2)
-        y = int(y_raw)
-        year = (2000 + y) if y < 100 else y
-        quarter = int(q_raw)
-        basis = "FY"
-    else:
-        # CY2024 Q4 / Q4 CY2024
-        m = re.search(r"\bCY\s*(\d{2,4})\s*Q([1-4])\b", upper) or re.search(r"\bQ([1-4])\s*CY\s*(\d{2,4})\b", upper)
-        if m:
-            if m.re.pattern.startswith(r"\bCY"):
-                y_raw, q_raw = m.group(1), m.group(2)
-            else:
-                q_raw, y_raw = m.group(1), m.group(2)
-            y = int(y_raw)
-            year = (2000 + y) if y < 100 else y
-            quarter = int(q_raw)
-            basis = "CY"
-            cal_year, cal_quarter = year, quarter
-        else: # bare "2024 Q4" / "Q4 2024" → treat as CY
-            m = re.search(r"\b(20\d{2})\s*Q([1-4])\b", upper) or re.search(r"\bQ([1-4])\s*(20\d{2})\b", upper)
-            if m:
-                if m.re.pattern.startswith(r"\b(20"):
-                    y_raw, q_raw = m.group(1), m.group(2)
-                else:
-                    q_raw, y_raw = m.group(1), m.group(2)
-                year = int(y_raw)
-                quarter = int(q_raw)
-                basis = "CY"
-                cal_year, cal_quarter = year, quarter
-            else: # just a year → default FY
-                y = re.search(r"\b(20\d{2})\b", upper)
-                year = int(y.group(1)) if y else None
-                quarter = None # basis remains FY
-    if not year:
-        return []
-
-    # Resolve ticker (sanitize keywords to avoid false positives like GAAP) ---
-    query_for_ticker = re.sub(
-        r"(?i)\b(NON[-\s]?GAAP|GAAP|EPS|EARNINGS|FISCAL|CALENDAR|FY|CY|Q[1-4]|REVENUE|NET\s+INCOME|OPERATING\s+(INCOME|MARGIN))\b",
-        " ",
-        text,
-    )
-    ticker = resolve_ticker_from_query(query_for_ticker)
-    if not ticker:
-        return []
-
-    # Map metric keyword
-    metric = None
-    for kw, key in {
-        "earnings per share": "eps",
-        "eps": "eps",
-        "revenue": "revenue",
-        "net income": "net_income",
-        "operating income": "operating_income",
-        "operating margin": "operating_margin",
-    }.items():
-        if re.search(rf"\b{re.escape(kw)}\b", text, re.I):
-            metric = key
-            break
-    if not metric:
-        return []
-
-    # Fetch (FY-based backend)
-    data = get_financial_metric(ticker, year, metric, quarter)
-    if not data:
-        return []
-
-    # If backend returns no quarter but user asked a quarter (common for Q4 in 10-K), show requested one
-    effective_quarter = data.get("quarter", quarter)
-
-    note = ""
-    if basis == "CY":
-        note = "requested calendar period; answered from fiscal data (SEC companyfacts)"
-
-    payload = {
-        "kind": "metric",
-        "basis": basis,                         # CRUCIAL: CY or FY
-        "ticker": data.get("ticker", ticker),
-        "metric": data.get("metric", metric),
-        "value": data.get("value"),
-        "year": data.get("year", year),
-        "quarter": effective_quarter,
-        "as_of": data.get("as_of"),
-        "source": data.get("source"),
-        "raw": data,
-        "calendar_year": cal_year,
-        "calendar_quarter": cal_quarter,
-        "note": note,
-    }
-
-    meta = {
-        "source": "financial_fetcher",
-        "source_type": "tool",
-        "organization": ticker,
-        "fiscal_year": str(year),
-        "report_type": "API",
-        "payload": payload,
-        "fiscal_basis": basis,
-    }
-    if effective_quarter:
-        meta["fiscal_quarter"] = f"Q{effective_quarter}"
-    if basis == "CY":
-        if cal_year: meta["calendar_year"] = str(cal_year)
-        if cal_quarter: meta["calendar_quarter"] = f"Q{cal_quarter}"
-
-    return [Document(page_content=json.dumps(data), metadata=meta)]
-
 # Step 4: UI branding and initialization
 # Initializes the page configuration for the application.
 def init_page(root_folder: Path) -> None:
@@ -618,7 +371,6 @@ def main(parameters) -> None:
             # Resolve ticker from query, refine question, and detect intent
             orig_query    = user_input
             refined_query = refine_question(llm, user_input, chat_history=chat_history)
-            # tkr = (resolve_ticker_from_query(orig_query) or "").upper()
             # Robust ticker resolution (sec -> legacy fallback) 
             tk_sec = resolve_ticker_sec(orig_query)
             tkr    = (tk_sec or "").upper()
@@ -844,7 +596,7 @@ def main(parameters) -> None:
                 for d in _docs:
                     k = key(d.metadata)
                     if k in mp and mp[k]:
-                        i = mp[k].pop(0)  # ✅ pop the index, not the whole list
+                        i = mp[k].pop(0)  # Pop the index, not the whole list
                         aligned.append(_sources[i])
                     else:
                         aligned.append({"source": k, "score": 0.0})

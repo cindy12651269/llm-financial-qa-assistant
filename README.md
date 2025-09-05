@@ -251,25 +251,32 @@ You should see matching outputs for these examples:
 > **Note:** These companies/questions are **not** in `PRELOAD` and have no pre-generated `.md` files. UI testing will trigger live JIT ingestion (SEC EDGAR / IR / slides).
 
 * *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?*
-* *What risks did Netflix highlight in its Q1 2025 10-Q?*
-* *What drove Adobe’s Digital Media ARR growth in Q2 2025 according to its 8-K?*
+* *What risks did Netflix highlight in its Q1 2025?*
+* *What initiatives did Adobe highlight as drivers of Digital Media growth for business professionals and consumers in Q2 2025?*
 ---
 #### 🔄 After JIT Ingestion — Sync New Docs
-Run these steps to rebuild the vector index after JIT files are saved into `docs/`:
+Run these steps to reset and sync your JIT environment:
 
 ```bash
 # 1. Stop the app
 Ctrl + C
 
-# 2. Clear old index
-rm -rf vector_store/docs_index
+# 2. Delete previously saved Markdown files for the target tickers 
+# (simulate a fresh JIT ingestion)
 
-# 3. Rebuild index with new docs
-python -m chatbot.memory_builder --chunk-size 512 --chunk-overlap 25
+# CRM (Salesforce): 
+rm -f docs/CRM_*.md
+rm -rf docs/CRM
+# Netflix:
+rm -f docs/NFLX_*.md
+rm -rf docs/NFLX
+# Adobe:
+rm -f docs/ADBE_*.md
+rm -rf docs/ADBE
 
-# 4. Restart the app
-TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py
-
+# 3. Restart the app with routing debug enabled
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization
+```
 ---
 ### 💬 General (LLM) — concept or theory only
 > **Note:** Pure LLM reasoning; does **not** call APIs or retrieve documents.
