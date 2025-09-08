@@ -188,6 +188,38 @@ def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int,
     f"chunk_size={chunk_size}, overlap={chunk_overlap} -> {vector_store_path}")
     logger.info("Memory Index has been created successfully!")
 
+# Infer ticker from metadata or source path.
+def infer_ticker(meta: dict) -> str:
+    if not meta:
+        return ""
+    t = (meta.get("ticker") or "").upper()
+    if t:
+        return t
+    src = (meta.get("source") or "")
+    base = src.split("/")[-1]
+    return base.split("_", 1)[0].upper() if "_" in base else ""
+
+# Delete all vectors for a given ticker from the index.
+def purge_ticker_from_index(index, ticker: str) -> int:
+    ticker = (ticker or "").upper()
+    col = getattr(index, "_collection", None)
+    if not col:
+        return 0
+    try:
+        before = col.count()
+        col.delete(where={"ticker": ticker})
+        after = col.count()
+        return before - after
+    except Exception:
+        got = col.get(include=["ids", "metadatas"])
+        purge_ids = []
+        for _id, meta in zip(got.get("ids", []), got.get("metadatas", [])):
+            if infer_ticker(meta) == ticker:
+                purge_ids.append(_id)
+        if purge_ids:
+            col.delete(ids=purge_ids)
+        return len(purge_ids)
+
 # CLI test
 def get_args() -> argparse.Namespace:
     """

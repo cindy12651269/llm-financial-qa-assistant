@@ -35,114 +35,115 @@ def _load_sec_ticker_map() -> list[dict]:
         for v in raw.values()
     ]
 
-_STOP  = {"ME","I","US","THE","AND","FOR","EPS","PE","ROE","FCF","SEC","IR","Q","FY","FQ","YOY",
-    "GAAP","NONGAAP","NON-GAAP"}
-_MEDIA = {"CNBC","BLOOMBERG","REUTERS","WSJ","YAHOO","FINANCE","MARKETWATCH","SEEKINGALPHA","NYSE","NASDAQ","AMEX","ARCA"}
+STOP  = {"ME","I","US","IT","THE","AND","FOR","SEC","IR","GAAP","NONGAAP","NON-GAAP","YOY","Q","FY","FQ",
+         "EPS","PE","P/E","ESG","ROE","FCF","EV/EBITDA","D/E","VS"}
+MEDIA = {"CNBC","BLOOMBERG","REUTERS","WSJ","YAHOO","FINANCE","MARKETWATCH","SEEKINGALPHA","NYSE","NASDAQ","AMEX","ARCA"}
 
-# Resolve ticker from free text: explicit → ALL-CAPS → SEC name match → unique brand token.
+# Small, safe demo overrides (keeps behavior stable even if SEC map is imperfect)
+BRAND_OVERRIDES = {
+    "apple": "AAPL", "alphabet": "GOOGL", "google": "GOOGL",
+    "amazon": "AMZN", "microsoft": "MSFT", "tesla": "TSLA",
+    "nvidia": "NVDA", "meta": "META", "salesforce": "CRM",
+    "adobe": "ADBE", "netflix": "NFLX", "berkshire": "BRK-B",
+}
+
+log = logging.getLogger("TICKER_RESOLVE")
+
 def resolve_ticker_sec(query: str) -> Optional[str]:
-    """
-    Robust ticker resolver:
-      1) explicit tickers like $AAPL / NASDAQ:CRM / (GOOGL) / BRK-B / BF.B
-      2) ALL-CAPS 2–5 letters (+ optional -/. class): BRK-B, BF.B
-      3) SEC company name match (full title and 'main name' w/o Inc/Corp/Ltd/…)
-      4) single capitalized token that uniquely prefixes a SEC 'main name' (e.g., 'Salesforce' → CRM)
-    All candidates are validated against SEC list and filtered by STOP/MEDIA.
-    """
-
     if not query:
-        logger.debug("[TICKER] empty query")
+        log.info("[resolve] empty query")
         return None
 
-    raw = query
-    # normalize curly quotes & possessive 's
-    q = unicodedata.normalize("NFKC", raw).replace("’", "'").replace("`", "'")
-    q = re.sub(r"'\s*s\b", "", q)   # Salesforce’s → Salesforce
-    q_low = q.lower()
+    # Normalize and neutralize “vs” so VS isn’t mistaken as a ticker
+    q  = unicodedata.normalize("NFKC", query).replace("’","'").replace("`","'")
+    q  = re.sub(r"'\s*s\b", "", q)                     # Apple's -> Apple
+    q  = re.sub(r"(?i)\bvs\.?\b", "versus", q)         # “vs” -> “versus”
+    q  = re.sub(r"(?i)\bP\/E\b", "PE ratio", q)        # ratio tokens
+    q  = re.sub(r"(?i)\bD\/E\b", "debt equity", q)
+    q  = re.sub(r"(?i)\bEV\/EBITDA\b", "EV EBITDA", q)
+    ql = q.lower()
 
-    logger.debug(f"[TICKER] raw='{raw}'")
-    logger.debug(f"[TICKER] normalized='{q}'")
+    log.info(f"[resolve] raw='{query}' | sanitized='{q}'")
 
-    rows = _load_sec_ticker_map()
-    valid = {r["ticker"] for r in rows}
+    rows  = _load_sec_ticker_map()                     # your existing loader
+    valid = {r["ticker"].upper() for r in rows}
 
-    # 1) explicit patterns 
-    explicit_pat = re.compile(r'(?i)\b(?:\$|nasdaq:|nyse:|amex:|arca:)?([A-Za-z]{1,5}(?:[-.][A-Za-z]{1,2})?)\b')
-    for m in explicit_pat.finditer(q):
-        cand = m.group(1).upper()
-        logger.debug(f"[TICKER] stage1 explicit cand={cand}")
-        if cand in valid and cand not in _STOP and cand not in _MEDIA:
-            logger.debug(f"[TICKER] ACCEPT explicit -> {cand}")
-            return cand
-        else:
-            logger.debug(f"[TICKER] REJECT explicit {cand} (valid={cand in valid}, stop={cand in _STOP}, media={cand in _MEDIA})")
+    # (A) Brand override — strict word boundary, first so demo stays stable
+    for brand, tk in BRAND_OVERRIDES.items():
+        if re.search(rf"\b{re.escape(brand)}\b", ql):
+            log.info(f"[resolve] brand override '{brand}' -> {tk}")
+            return tk
 
-    # 2) ALL-CAPS 
-    caps = re.findall(r"\b[A-Z]{2,5}(?:[-.][A-Z]{1,2})?\b", q)
-    logger.debug(f"[TICKER] stage2 allcaps candidates={caps}")
-    for t in caps:
-        if t in valid and t not in _STOP and t not in _MEDIA:
-            logger.debug(f"[TICKER] ACCEPT allcaps -> {t}")
+    # (B) Explicit tickers ($AAPL, NASDAQ:CRM, etc.)
+    for m in re.finditer(r'(?i)\b(?:\$|nasdaq:|nyse:|amex:|arca:)([A-Za-z]{1,5}(?:[-.][A-Za-z]{1,2})?)\b', q):
+        t = m.group(1).upper()
+        log.info(f"[resolve] explicit cand={t} valid={t in valid}")
+        if t in valid and t not in STOP and t not in MEDIA:
+            log.info(f"[resolve] explicit ACCEPT -> {t}")
             return t
-        else:
-            logger.debug(f"[TICKER] REJECT allcaps {t}")
 
-    # Build SEC name index
-    def strip_suffixes(name: str) -> str:
-        n = re.sub(r",?\s+(incorporated|inc|corp|corporation|co|company|ltd|plc|nv|sa|ag|holdings|group)\.?\b", "", name, flags=re.I)
-        n = re.sub(r"^\s*the\s+", "", n, flags=re.I)
-        return re.sub(r"\s{2,}", " ", n).strip()
+    # (C) Parentheses (GOOGL)
+    for m in re.finditer(r'\(([A-Za-z]{3,5}(?:[-.][A-Za-z]{1,2})?)\)', q):
+        t = m.group(1).upper()
+        log.info(f"[resolve] paren cand={t} valid={t in valid}")
+        if t in valid and t not in STOP and t not in MEDIA:
+            log.info(f"[resolve] paren ACCEPT -> {t}")
+            return t
 
-    name_idx: Dict[str, str] = {}
-    main_list: list[tuple[str, str]] = []
+    # (D) Unprefixed ALL-CAPS (len≥3 blocks VS)
+    for t in re.findall(r"\b[A-Z]{3,5}(?:[-.][A-Z]{1,2})?\b", q):
+        log.info(f"[resolve] allcaps cand={t} valid={t in valid}")
+        if t in valid and t not in STOP and t not in MEDIA:
+            log.info(f"[resolve] allcaps ACCEPT -> {t}")
+            return t
+
+    # (E) SEC name index: full title + stripped main name
+    def strip_sfx(s: str) -> str:
+        s = re.sub(r",?\s+(incorporated|inc|corp|corporation|co|company|ltd|plc|nv|sa|ag|holdings|group)\.?\b","",s,flags=re.I)
+        s = re.sub(r"^\s*the\s+","",s,flags=re.I)
+        return re.sub(r"\s{2,}"," ",s).strip()
+
+    name_idx, mains = {}, []
     for r in rows:
-        title = (r["title"] or "").strip().lower()
-        if not title: 
-            continue
-        main = strip_suffixes(title)
-        name_idx[title] = r["ticker"]
-        name_idx[main] = r["ticker"]
-        main_list.append((main, r["ticker"]))
+        title = (r.get("title") or "").strip()
+        if not title: continue
+        main = strip_sfx(title)
+        tk   = r["ticker"].upper()
+        name_idx[title.lower()] = tk
+        name_idx[main.lower()]  = tk
+        mains.append((main.lower(), tk))
 
-    # 3) company name match 
+    # Longest name first
     for name in sorted(name_idx.keys(), key=len, reverse=True):
-        if len(name) < 4:
-            continue
-        if re.search(rf"\b{re.escape(name)}\b", q_low):
+        if len(name) >= 4 and re.search(rf"\b{re.escape(name)}\b", ql):
             tk = name_idx[name]
             if tk in valid:
-                logger.debug(f"[TICKER] ACCEPT name_match '{name}' -> {tk}")
+                log.info(f"[resolve] name match '{name}' -> {tk}")
                 return tk
-            else:
-                logger.debug(f"[TICKER] REJECT name_match '{name}' (not valid)")
 
-    # 4) unique prefix match 
-    tokens = re.findall(r"\b([A-Z][a-z]{3,})\b", q)
-    logger.debug(f"[TICKER] stage4 tokens={tokens}")
-    if tokens:
-        for tok in tokens:
-            tl = tok.lower()
-            hits = [(m, tk) for (m, tk) in main_list if m.startswith(tl)]
-            logger.debug(f"[TICKER] probe token={tok} hits={hits}")
-            if len(hits) == 1:
-                logger.debug(f"[TICKER] ACCEPT prefix {tok} -> {hits[0][1]}")
-                return hits[0][1]
+    # (F) Unique capitalized token → main name
+    for tok in re.findall(r"\b([A-Z][a-z]{3,})\b", q):
+        hits = [(m, tk) for (m, tk) in mains if m.startswith(tok.lower())]
+        log.info(f"[resolve] cap token '{tok}' hits={hits}")
+        if len(hits) == 1:
+            log.info(f"[resolve] cap token ACCEPT -> {hits[0][1]}")
+            return hits[0][1]
 
-    logger.debug("[TICKER] result=NONE")
+    log.info("[resolve] no ticker found")
+    return None
+
+def resolve_ticker_guarded(query: str) -> Optional[str]:
+    t = resolve_ticker_sec(query)
+    if t:
+        return t
+    low = unicodedata.normalize("NFKC", query).lower()
+    for _, (tk, keys) in BRAND_OVERRIDES.items():
+        if any(re.search(rf"\b{re.escape(k)}\b", low) for k in keys):
+            return tk
     return None
 
 # CIK cache 
 _CIK_CACHE: Dict[str,str] = {}
-def get_cik_from_ticker(ticker: str) -> Optional[str]:
-    if not ticker: return None
-    sym = ticker.upper().strip()
-    if sym in _CIK_CACHE: return _CIK_CACHE[sym]
-    for r in _load_sec_ticker_map():
-        if r["ticker"] == sym:
-            _CIK_CACHE[sym] = r["cik"]
-            return r["cik"]
-    logger.warning("CIK not found in SEC mapping for ticker=%s", sym)
-    return None
 
 # Resolve CIK (10-digit) via SEC mapping, with a small in-memory cache.
 def get_cik_from_ticker(ticker: str) -> Optional[str]:
@@ -454,7 +455,7 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
         logging.info("[TOOL metric] empty query")
         return []
 
-    # ---- 0) Quick gate: only run if we see any relevant metric keywords ----
+    # 0) Quick gate: only run if we see any relevant metric keywords 
     METRIC_GATE = re.compile(
         r"\b(eps|earnings\s+per\s+share|revenue|net\s+income|operating\s+(income|margin))\b",
         re.I,
@@ -468,7 +469,7 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
     year = quarter = None
     cal_year = cal_quarter = None
 
-    # ---- 1) Parse period: FY2024 Q4 / Q4 FY2024 ----
+    # 1) Parse period: FY2024 Q4 / Q4 FY2024
     m = (re.search(r"\bFY\s*(\d{2,4})\s*Q([1-4])\b", upper)
          or re.search(r"\bQ([1-4])\s*FY\s*(\d{2,4})\b", upper))
     if m:
@@ -481,7 +482,7 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
         quarter = int(q_raw_num)
         basis = "FY"
     else:
-        # ---- 2) CY2024 Q4 / Q4 CY2024 ----
+        # 2) CY2024 Q4 / Q4 CY2024 
         m = (re.search(r"\bCY\s*(\d{2,4})\s*Q([1-4])\b", upper)
              or re.search(r"\bQ([1-4])\s*CY\s*(\d{2,4})\b", upper))
         if m:
@@ -495,7 +496,7 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
             basis = "CY"
             cal_year, cal_quarter = year, quarter
         else:
-            # ---- 3) bare 2024 Q4 / Q4 2024 → treat as CY ----
+            # 3) bare 2024 Q4 / Q4 2024 → treat as CY
             m = (re.search(r"\b(20\d{2})\s*Q([1-4])\b", upper)
                  or re.search(r"\bQ([1-4])\s*(20\d{2})\b", upper))
             if m:
@@ -507,7 +508,7 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
                 basis = "CY"
                 cal_year, cal_quarter = year, quarter
             else:
-                # ---- 4) just a year → default FY ----
+                # 4) just a year → default FY 
                 y = re.search(r"\b(20\d{2})\b", upper)
                 year = int(y.group(1)) if y else None
                 quarter = None  # FY
@@ -515,7 +516,7 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
         logging.info("[TOOL metric] period parse failed; no year found | query=%r", q_raw)
         return []
 
-    # ---- 5) Resolve ticker (sanitize to avoid GAAP/EPS noise) ----
+    # 5) Resolve ticker (sanitize to avoid GAAP/EPS noise) 
     sanitized_for_ticker = re.sub(
         r"(?i)\b(NON[-\s]?GAAP|GAAP|EPS|EARNINGS|FISCAL|CALENDAR|FY|CY|Q[1-4]|REVENUE|NET\s+INCOME|OPERATING\s+(INCOME|MARGIN))\b",
         " ",
@@ -531,7 +532,7 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
     logging.info("[TOOL metric] ticker=%s parsed_ok basis=%s year=%s quarter=%s",
                  ticker, basis, year, quarter)
 
-    # ---- 6) Detect metric (priority: operating income → operating margin → EPS → revenue → net income) ----
+    # 6) Detect metric (priority: operating income → operating margin → EPS → revenue → net income)
     metric = None
     # operating income
     if re.search(r"\boperating\s+income\b", q_raw, re.I):
@@ -554,7 +555,7 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
         return []
     logging.info("[TOOL metric] metric=%s (%s)", metric, why)
 
-    # ---- 7) Fetch from backend (FY-based data source) ----
+    # 7) Fetch from backend (FY-based data source) 
     try:
         data = get_financial_metric(ticker, year, metric, quarter)
     except Exception as e:
@@ -606,6 +607,38 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
     logging.info("[TOOL metric] OK | ticker=%s metric=%s basis=%s y=%s q=%s value=%r",
                  ticker, metric, basis, year, effective_quarter, data.get("value"))
     return [Document(page_content=json.dumps(data), metadata=meta)]
+
+
+# helpers for guess + filter by ticker
+def guess_ticker_from_path(path: str) -> str:
+    """Best-effort extract ticker from file path/name."""
+    s = (path or "").replace("\\", "/")
+    m = re.search(r"/([A-Z]{1,5})(?:[_/])", s)
+    return (m.group(1) if m else "").upper()
+
+def is_ticker_doc(d, ticker: str) -> bool:
+    md = getattr(d, "metadata", {}) or {}
+    path = (md.get("source") or md.get("filepath") or "")
+    return (f"/{ticker}_" in path.upper()) or (f"/{ticker}/" in path.upper()) or (md.get("ticker", "").upper() == ticker)
+
+def preview(txt: str, n: int = 240) -> str:
+    s = (txt or "").replace("\n", " ").strip()
+    return (s[:n] + "…") if len(s) > n else s
+
+def rebuild_sources(final_docs: list):
+    out = []
+    for d in final_docs:
+        md = getattr(d, "metadata", {}) or {}
+        out.append({
+            "source": md.get("source") or md.get("filepath") or "",
+            "score":  md.get("score", 0.0),
+            "organization": md.get("organization", ""),
+            "report_type":  md.get("report_type", ""),
+            "fiscal_year":  md.get("fiscal_year", ""),
+            "title":         md.get("title", ""),
+            "content_preview": preview(getattr(d, "page_content", "")),
+        })
+    return out
 
 # Simple CLI smoke (optional)
 if __name__ == "__main__":

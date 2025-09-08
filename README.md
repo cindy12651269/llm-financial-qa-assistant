@@ -234,7 +234,7 @@ You should see matching outputs for these examples:
 ### 🧪 RAG — Demo Reference (from `demo.md`)
 > These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
 
-* *Define the Sharpe ratio and how to interpret it (with a short example).*
+* *Define the Sharpe ratio and how to interpret it.*
 * *Explain the difference between alpha and beta in portfolio theory.*
 * *What is a "bid-ask spread" in stock trading, and why does it matter?*
 ---
@@ -274,16 +274,19 @@ rm -rf docs/NFLX
 rm -f docs/ADBE_*.md
 rm -rf docs/ADBE
 
-# 3. Restart the app with routing debug enabled
+# 3. Set environment variables (two-step input)
+export PURGE_TICKERS="CRM,NFLX,ADBE"
+
+# 4. Restart the app
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization
 ```
 ---
 ### 💬 General (LLM) — concept or theory only
 > **Note:** Pure LLM reasoning; does **not** call APIs or retrieve documents.
 
-* *What is EPS and why is it important?*
-* *How can revenue growth affect stock price?*
-* *What’s the difference between GAAP and non-GAAP EPS?*
+* *What does the P/E ratio tell investors about a company?*
+* *How do ESG risks influence a company’s long-term valuation?*
+* *Why is diversification important in portfolio construction?*
 
 ---
 
