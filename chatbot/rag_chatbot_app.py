@@ -2,13 +2,12 @@ import os, logging, re, traceback
 import html
 import argparse
 import sys
-import time
 import threading
 from pathlib import Path
 from entities.document import Document
 from chatbot.document_loader.format import Format, to_html, all_are_8k, stream_tokens
 from chatbot.document_loader.text_splitter import create_recursive_text_splitter
-from typing import List, Optional
+from typing import List
 import streamlit as st
 from chatbot.bot.client.lama_cpp_client import LamaCppClient
 from chatbot.bot.conversation.chat_history import ChatHistory
@@ -23,9 +22,8 @@ from chatbot.bot.memory.vector_database.chroma import Chroma
 from chatbot.bot.model.model_registry import get_model_settings, get_models
 from chatbot.financial_fetcher import(
 compose_metric_header,fallback_news_lookup, fallback_stock_lookup, fallback_financial_metric_lookup, 
-resolve_ticker_guarded, guess_ticker_from_path, is_ticker_doc, rebuild_sources)
+resolve_ticker_guarded, rebuild_sources)
 from chatbot.ingest_pipeline import ingest_ticker
-from chatbot.memory_builder import purge_ticker_from_index,infer_ticker
 from claude_api import call_claude_fallback, SYS_PROMPT
 from helpers.log import get_logger
 
@@ -131,59 +129,39 @@ def ensure_company_indexed(ticker: str, cap: int = 3, timeout: int = 10) -> None
     logging.warning(f"[JIT] {ticker.upper()} ingestion triggered (timeout={timeout}s). "
                     "Run memory_builder to persist into vector index.")
 
-# Hot-insert freshly saved docs 
-def hot_insert_ticker_docs(index, ticker: str, *, docs_dir: Path = DOCS_DIR,
-    chunk_size: int = 512, chunk_overlap: int = 25,) -> int:
+# Hot-insert markdown docs for a ticker into the vector index.
+def hot_insert_ticker_docs(index, ticker: str,
+    docs_dir: Path = DOCS_DIR, chunk_size: int = 512, chunk_overlap: int = 25) -> int:
     tkr = (ticker or "").upper()
-    parse_md_meta, _ = build_ticker_meta_tools(tkr)
-
-    # Collect markdown files (flat + subdir)
-    md_files = list(docs_dir.glob(f"{tkr}_*_*.md"))
-    subdir = docs_dir / tkr
-    if subdir.exists():
-        md_files += list(subdir.glob("*.md"))
-
-    logging.debug(f"[JIT] Found {len(md_files)} md files for {tkr}")
+    md_files = list(docs_dir.glob(f"{tkr}_*_*.md")) + list((docs_dir / tkr).glob("*.md"))
     if not md_files:
-        logging.info(f"[JIT] No markdown files found for {tkr}")
+        logging.info(f"[JIT] No markdown files for {tkr}")
         return 0
 
-    # Minimal HTML → text sanitizer
     def _to_text(raw: str) -> str:
-        if "<" in raw and ">" in raw:
-            raw = re.sub(r"<[^>]+>", " ", raw)  # drop tags
-            raw = re.sub(r"&nbsp;|&amp;|&lt;|&gt;|&quot;|&#160;", " ", raw)  # basic entities
-            raw = re.sub(r"\s{2,}", " ", raw).strip()  # collapse spaces
-        return raw
+        return re.sub(r"\s{2,}", " ", re.sub(r"<[^>]+>|&\w+;", " ", raw)).strip()
 
-    # Load and sanitize
-    docs: List[Document] = []
+    docs = []
     for p in md_files:
         try:
             txt = _to_text(p.read_text(encoding="utf-8"))
             if txt:
-                docs.append(Document(page_content=txt, metadata=parse_md_meta(p)))
+                docs.append(Document(page_content=txt, metadata={"source": str(p), "ticker": tkr}))
         except Exception as e:
-            logging.warning(f"[JIT] Read/sanitize failed for {p}: {e!r}")
+            logging.warning(f"[JIT] read fail {p}: {e!r}")
+    if not docs: return 0
 
-    if not docs:
-        return 0
-    # Chunk & insert
-    splitter = create_recursive_text_splitter(
-        format=Format.MARKDOWN.value, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     try:
-        chunks = splitter.split_documents(docs)
-    except Exception as e:
-        logging.warning(f"[JIT] split_documents failed: {e!r}")
-        return 0
-    if not chunks:
-        return 0
-    try:
-        index.from_chunks(chunks)  # supported by your vector store
+        chunks = create_recursive_text_splitter(
+            format=Format.MARKDOWN.value, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        ).split_documents(docs)
+        for c in chunks:
+            c.metadata.update({"ticker": tkr, "source": c.metadata.get("source")})
+        index.from_chunks(chunks)
         logging.info(f"[JIT] Hot-inserted {len(chunks)} chunks for {tkr}")
         return len(chunks)
     except Exception as e:
-        logging.warning(f"[JIT] Hot insert failed for {tkr}: {e!r}")
+        logging.warning(f"[JIT] insert failed {tkr}: {e!r}")
         return 0
 
 # Step 3: Load the fine-tuned financial LLM client
@@ -407,92 +385,71 @@ _LOG   = logging.getLogger("ROUTING")
 def jit_and_retrieve(index, refined_query: str, tkr: str | None,
     k: int, parameters=None, used_jit_out: dict | None = None):
 
-    T = (tkr or "").upper()
-    used_jit = False
+    T = (tkr or "").upper().strip()
     if used_jit_out:
         used_jit_out["flag"] = False
 
-    # Optional: purge residual tickers via env var, e.g. PURGE_TICKERS="CRM,NFLX"
-    try:
-        purge_env = os.getenv("PURGE_TICKERS", "")
-        if purge_env:
-            for tk in [s.strip().upper() for s in purge_env.split(",") if s.strip()]:
-                removed = purge_ticker_from_index(index, tk)
-                if _TRACE: _LOG.info(f"[PURGE] ticker={tk} removed_vectors={removed}")
-    except Exception as e:
-        _LOG.warning(f"[PURGE] failed: {e!r}")
+    # Helper: get basename like "TSLA_10-Q_2025-06-30.md"
+    def _basename(meta: dict) -> str:
+        src = (meta or {}).get("source", "") or ""
+        return src.split("/")[-1] if src else "(unknown)"
 
-    # JIT ingest (only for non-PRELOAD tickers) 
-    if T and (T not in PRELOAD) and JIT_ENABLED:
-        if not _has_enough_local_docs(T, cap=3):
-            try:
-                ensure_company_indexed(T, cap=3, timeout=10)
-                hot_insert_ticker_docs(
-                    index, T, DOCS_DIR,
-                    getattr(parameters, "chunk_size", 512),
-                    getattr(parameters, "chunk_overlap", 25)
-                )
-                used_jit = True
-                if _TRACE: _LOG.info(f"[JIT] ingestion fired for {T}")
-            except Exception as e:
-                _LOG.warning(f"[JIT] error: {e!r}")
+    # Helper: strict filename filter (keep ONLY docs starting with "<T>_")
+    def _filter_by_filename(docs, T):
+        if not T:
+            return docs
+        keep = [d for d in (docs or [])
+                if _basename(getattr(d, "metadata", {})).startswith(f"{T}_")]
+        if keep:
+            if _TRACE:
+                names = [_basename(getattr(d, "metadata", {})) for d in keep]
+                _LOG.info(f"[FILTER] kept {len(keep)}/{len(docs)} for {T}: {names}")
+            return keep
+        if _TRACE:
+            _LOG.info(f"[FILTER-FAIL] no docs matched {T}")
+        return []  # do NOT fall back to unrelated docs
 
-    # Initial retrieval 
+    # JIT ingestion (only for non-PRELOAD tickers) 
+    if T and (T not in PRELOAD) and JIT_ENABLED and not _has_enough_local_docs(T, cap=3):
+        try:
+            ensure_company_indexed(T, cap=3, timeout=10)
+            # New call style (keyword args only)
+            hot_insert_ticker_docs(
+                index, T,
+                docs_dir=DOCS_DIR,
+                chunk_size=getattr(parameters, "chunk_size", 512),
+                chunk_overlap=getattr(parameters, "chunk_overlap", 25),
+            )
+            if used_jit_out:
+                used_jit_out["flag"] = True
+            if _TRACE:
+                _LOG.info(f"[JIT] ingestion fired for {T}")
+        except Exception as e:
+            _LOG.warning(f"[JIT] error: {e!r}")
+
+    # Primary retrieval 
     q = f"\"{T}\" {refined_query}" if T else refined_query
     docs, _ = index.similarity_search_with_threshold(q, k=k, threshold=0.05, exclude_tools=True)
     if _TRACE:
-        _LOG.info(f"[RAG] initial query='{q}' got {len(docs)} docs")
-        for d in docs[:3]:
-            _LOG.info(f"[RAG] initial doc source={d.metadata.get('source')} ticker={d.metadata.get('ticker')}")
+        names = [_basename(getattr(d, "metadata", {})) for d in (docs or [])]
+        _LOG.info(f"[RAG] query='{q}' got {len(docs)} docs: {names}")
+    docs = _filter_by_filename(docs, T)
 
-    # Rerank + hard filter 
-    if T and docs:
-        try:
-            _, rerank = build_ticker_meta_tools(T)
-            docs = rerank(docs, top_k=k, keywords=None)
-            if _TRACE: _LOG.info(f"[RERANK] after rerank={len(docs)} docs")
-        except Exception as e:
-            if _TRACE: _LOG.info(f"[RERANK] skipped error={e!r}")
-        before = len(docs)
-        docs = [d for d in docs if is_ticker_doc(d, T)]
-        if _TRACE:
-            _LOG.info(f"[FILTER] kept {len(docs)}/{before} for {T}")
-            for d in docs[:3]:
-                _LOG.info(f"[FILTER] doc source={d.metadata.get('source')} ticker={d.metadata.get('ticker')}")
-    srcs = rebuild_sources(docs)
-
-    # Retry if empty 
-    if T and not docs:
-        rq = f"\"{T}\" {refined_query}"
-        docs, _ = index.similarity_search_with_threshold(rq, k=k, threshold=0.05, exclude_tools=True)
-        if _TRACE: _LOG.info(f"[RETRY] query='{rq}' got {len(docs)} docs")
-        if docs:
-            try:
-                _, rerank = build_ticker_meta_tools(T)
-                docs = rerank(docs, top_k=k, keywords=None)
-                if _TRACE: _LOG.info(f"[RETRY] after rerank={len(docs)} docs")
-            except Exception as e:
-                if _TRACE: _LOG.info(f"[RETRY] rerank skipped error={e!r}")
-            before = len(docs)
-            docs = [d for d in docs if is_ticker_doc(d, T)]
-            if _TRACE: _LOG.info(f"[RETRY] kept {len(docs)}/{before} for {T}")
-        srcs = rebuild_sources(docs)
-
-    # Fallback: still empty → keep unfiltered docs, prefer inferred T 
+    # Fallback retrieval (looser threshold / larger k)
     if T and not docs:
         docs, _ = index.similarity_search_with_threshold(q, k=max(k, 5), threshold=0.08, exclude_tools=True)
-        # Prefer docs whose inferred ticker == T; if none, keep original unfiltered result
-        inferred = [d for d in docs if infer_ticker(getattr(d, "metadata", {}) or {}) == T]
-        if inferred:
-            docs = inferred
-        srcs = rebuild_sources(docs)
         if _TRACE:
-            _LOG.info(f"[FALLBACK] kept {len(docs)} docs for {T} (prefer-inferred)")
+            names = [_basename(getattr(d, "metadata", {})) for d in (docs or [])]
+            _LOG.info(f"[FALLBACK] query='{q}' got {len(docs)} docs before filter: {names}")
+        docs = _filter_by_filename(docs, T)
 
-    if used_jit_out:
-        used_jit_out["flag"] = used_jit
-    return docs, srcs
+    # If still empty, return empty sources (type-consistent)
+    if T and not docs:
+        if _TRACE:
+            _LOG.info(f"[RESULT] No file about {T} found")
+        return [], []
 
+    return docs, rebuild_sources(docs)
 
 # Answer with the currently loaded base LLM when no retrieved documents exist.
 # If that fails, fall back to Claude and render consistently in HTML.
@@ -546,10 +503,18 @@ def run_llm_or_claude(user_input: str, llm, ctx_synthesis_strategy,
         })
         chat_history.append(f"question: {user_input}, answer: {out.strip()} (via Claude)")
 
-# One-stop header renderer: route badge (HTML), optional TOOL FACT (HTML via _to_html), and collapsible RAG sources list (HTML)
-# Render the sources list inside the provided container (same chat bubble)
-def render_header_html(route_kind: str, facts_md: str | None, sources: list[dict]) -> None:
-    # Top line + optional fact
+# One-stop header renderer: route badge + optional TOOL FACT + collapsible sources
+def render_header_html(route_kind: str, facts_md: str | None, sources: list) -> None:
+    # normalize sources to list[dict] 
+    norm_sources = []
+    for s in (sources or []):
+        if isinstance(s, dict):
+            norm_sources.append(s)
+        elif isinstance(s, str):
+            norm_sources.append({"source": s, "score": 0.0, "title": "", "content_preview": ""})
+    sources = norm_sources
+
+    # route header + optional fact 
     header = st.empty()
     route_html = (
         "<div style='white-space:pre-wrap;font-variant-ligatures:none;"
@@ -558,32 +523,38 @@ def render_header_html(route_kind: str, facts_md: str | None, sources: list[dict
         f"<strong>Route:</strong> {html.escape(route_kind)}</div>"
     )
     header.markdown(route_html + (to_html(facts_md) if facts_md else ""), unsafe_allow_html=True)
-    # Sources (collapsible), skip if none
+
+    # sources (collapsible) 
     if not sources:
         return
-
     with st.container():
         exp = st.expander("📚 Show retrieval sources")
         with exp:
             for s in sources:
-                score = f"{s.get('score', 0.0):.3f}"
-                org   = s.get("organization", "")
-                rtype = s.get("report_type", "")
-                fy    = s.get("fiscal_year", "")
-                src   = s.get("source", "")
-                title = s.get("title") or s.get("content_preview") or ""
+                # score: robust cast to float
+                try:
+                    score_val = float(s.get("score", 0.0))
+                except Exception:
+                    score_val = 0.0
+                score = f"{score_val:.3f}"
+
+                org   = str(s.get("organization", "") or "")
+                rtype = str(s.get("report_type", "")  or "")
+                fy    = str(s.get("fiscal_year", "")  or "")
+                src   = str(s.get("source", "")       or "(unknown)")
+                title = str(s.get("title") or s.get("content_preview") or "")
 
                 block = (
                     "<div style='white-space:pre-wrap;font-variant-ligatures:none;"
                     "-webkit-font-smoothing:antialiased;font-feature-settings:\"liga\" 0,\"clig\" 0;"
                     "font-style:normal;line-height:1.55;font-size:0.95rem;margin-bottom:0.8em;'>"
-                    f"<strong>Score:</strong> {score} • {html.escape(org)} {html.escape(rtype)} {html.escape(str(fy))}<br>"
+                    f"<strong>Score:</strong> {score} • {html.escape(org)} {html.escape(rtype)} {html.escape(fy)}<br>"
                     f"<a href='{html.escape(src)}' target='_blank'>{html.escape(src)}</a><br>"
                     f"{html.escape(title)}"
                     "</div>"
                 )
                 st.markdown(block, unsafe_allow_html=True)
-                
+
 # Stream the final answer into UI.
 def stream_answer(llm, ctx_synthesis_strategy, user_input, facts_md, retrieved_docs, chat_history):
     route = st.session_state.get("last_route")

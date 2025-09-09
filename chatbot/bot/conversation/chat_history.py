@@ -1,34 +1,33 @@
+from typing import List, Optional
 class ChatHistory(list):
-    def __init__(self, messages: list | None = None, total_length: int = -1):
-        """Initialise the queue with a fixed total length.
-
-        Args:
-            messages (list | None): A list of initial messages
-            total_length (int): The maximum number of messages the chat history can hold.
-        """
-        if messages is None:
-            messages = []
-
-        super().__init__(messages)
+    """
+    A tiny sliding-window chat buffer.
+    - total_length > 0: keep only the last N messages (drop oldest first)
+    - total_length <= 0: unlimited (no trimming)
+    """
+    def __init__(self, messages: Optional[List[str]] = None, total_length: int = 2):
+        super().__init__(messages or [])
         self.total_length = total_length
 
     def append(self, msg: str):
-        """
-        Append a message that contains a question and an answer to the chat history.
-
-        Args:
-            msg (str): The message to be added to the chat history.
-        """
-        if len(self) == self.total_length:
-            self.pop(0)
+        # Trim when current length >= window (not just ==), so we never exceed the cap.
+        if self.total_length and self.total_length > 0:
+            while len(self) >= self.total_length:
+                self.pop(0)
         super().append(msg)
 
-    def __str__(self):
+    def snapshot(self, n: Optional[int] = None) -> str:
         """
-        Get the chat history as a single string.
+        Return the last n messages (default: window size if capped; else all).
+        """
+        if n is None:
+            if self.total_length and self.total_length > 0:
+                n = self.total_length
+            else:
+                n = len(self)
+        n = max(1, min(n, len(self))) if self else 0
+        return "\n".join(self[-n:]) if n else ""
 
-        Returns:
-            str: The chat history concatenated into a single string, with each message separated by a newline.
-        """
-        chat_history = "\n".join([msg for msg in self])
-        return chat_history
+    def __str__(self) -> str:
+        # Safer default: show only the last window to avoid leaking stale prompts.
+        return self.snapshot()

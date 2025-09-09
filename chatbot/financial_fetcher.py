@@ -136,9 +136,10 @@ def resolve_ticker_guarded(query: str) -> Optional[str]:
     t = resolve_ticker_sec(query)
     if t:
         return t
+    # minimal fallback: try brand overrides again with a strict word boundary
     low = unicodedata.normalize("NFKC", query).lower()
-    for _, (tk, keys) in BRAND_OVERRIDES.items():
-        if any(re.search(rf"\b{re.escape(k)}\b", low) for k in keys):
+    for brand, tk in BRAND_OVERRIDES.items():
+        if re.search(rf"\b{re.escape(brand)}\b", low):
             return tk
     return None
 
@@ -608,35 +609,28 @@ def fallback_financial_metric_lookup(query: str) -> list[Document]:
                  ticker, metric, basis, year, effective_quarter, data.get("value"))
     return [Document(page_content=json.dumps(data), metadata=meta)]
 
-
-# helpers for guess + filter by ticker
-def guess_ticker_from_path(path: str) -> str:
-    """Best-effort extract ticker from file path/name."""
-    s = (path or "").replace("\\", "/")
-    m = re.search(r"/([A-Z]{1,5})(?:[_/])", s)
-    return (m.group(1) if m else "").upper()
-
-def is_ticker_doc(d, ticker: str) -> bool:
-    md = getattr(d, "metadata", {}) or {}
-    path = (md.get("source") or md.get("filepath") or "")
-    return (f"/{ticker}_" in path.upper()) or (f"/{ticker}/" in path.upper()) or (md.get("ticker", "").upper() == ticker)
-
 def preview(txt: str, n: int = 240) -> str:
     s = (txt or "").replace("\n", " ").strip()
     return (s[:n] + "…") if len(s) > n else s
 
 def rebuild_sources(final_docs: list):
     out = []
-    for d in final_docs:
+    for d in (final_docs or []):
         md = getattr(d, "metadata", {}) or {}
+        # score is a Document attribute, not in metadata
+        try:
+            score_val = float(getattr(d, "score", 0.0))
+        except Exception:
+            score_val = 0.0
+
         out.append({
-            "source": md.get("source") or md.get("filepath") or "",
-            "score":  md.get("score", 0.0),
-            "organization": md.get("organization", ""),
-            "report_type":  md.get("report_type", ""),
-            "fiscal_year":  md.get("fiscal_year", ""),
-            "title":         md.get("title", ""),
-            "content_preview": preview(getattr(d, "page_content", "")),
+            "source": md.get("source") or md.get("filepath") or "(unknown)",
+            "score":  score_val,
+            "organization": md.get("organization", "") or "",
+            "report_type":  md.get("report_type", "")  or "",
+            "fiscal_year":  md.get("fiscal_year", "")  or "",
+            "title":        md.get("title", "")        or "",
+            "content_preview": preview(getattr(d, "page_content", "") or ""),
         })
     return out
 

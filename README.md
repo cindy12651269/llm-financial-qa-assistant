@@ -274,8 +274,9 @@ rm -rf docs/NFLX
 rm -f docs/ADBE_*.md
 rm -rf docs/ADBE
 
-# 3. Set environment variables (two-step input)
+# 3. Set environment variables
 export PURGE_TICKERS="CRM,NFLX,ADBE"
+python chatbot/memory_builder.py --chunk-size 1000 --chunk-overlap 50
 
 # 4. Restart the app
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization

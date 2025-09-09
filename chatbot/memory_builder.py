@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 from chatbot.bot.memory.embedder import Embedder
 from chatbot.bot.memory.vector_database.chroma import Chroma
+import chromadb
 from chatbot.document_loader.format import Format
 from chatbot.document_loader.loader import DirectoryLoader
 from chatbot.document_loader.text_splitter import create_recursive_text_splitter
 from chatbot.entities.document import Document
 from chatbot.helpers.log import get_logger
+
 
 logger = get_logger(__name__)
 
@@ -116,77 +118,24 @@ def split_chunks(sources: list, chunk_size: int = 512, chunk_overlap: int = 25) 
         chunks.append(chunk)
     return chunks
 
-def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size: int, chunk_overlap: int):
-    """
-    Loads financial documents, splits them, embeds, and stores in vector DB.
-
-    Args:
-        docs_path (Path): Path to the source docs (e.g. 'docs/demo.md')
-        vector_store_path (str): Path to persist Chroma DB.
-        chunk_size (int): Chunk size for document splitting.
-        chunk_overlap (int): Overlap between chunks.
-        Build the vector index from Markdown docs under `docs_path`.
-
-    What it does (minimal, safe):
-    1) Load all `**/*.md` recursively via DirectoryLoader (already configured in load_documents()).
-    2) Normalize metadata per file (organization/report_type/fiscal_year/source_type/source/title).
-    3) Strip the ingest header (above the first '---') and only index the BODY.
-    4) Chunk the BODY and persist to Chroma.
-
-    """
+def build_memory_index(docs_path: Path, vector_store_path: str, chunk_size=512, chunk_overlap=25):
     logger.info(f"Loading documents from: {docs_path}")
     sources = load_documents(docs_path)
-    logger.info(f"Number of loaded documents: {len(sources)}")
-    
-    if not sources:
-        logger.warning(f"[INDEX BUILDER] No markdown files found under {docs_path}. Nothing to index.")
-        return
-    # Ensure the index directory exists (critical fix so first-time build doesn't fail)
+    if not sources: return
     Path(vector_store_path).mkdir(parents=True, exist_ok=True)
-
-    logger.info("Chunking documents...")
-    splitter = create_recursive_text_splitter(
+    splitter, docs = create_recursive_text_splitter(
         format=Format.MARKDOWN.value,
         chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
-
-    chunk_docs: list[Document] = []
-
+        chunk_overlap=chunk_overlap
+    ), []
     for src in sources:
-        md_text = src.page_content or ""
-        # Prefer local file path if available; fall back to 'source' only when it's not a URL.
-        src_path_str = (
-            src.metadata.get("filepath")
-            or (
-                src.metadata.get("source")
-                if not str(src.metadata.get("source", "")).lower().startswith(("http://", "https://"))
-                else ""
-            )
-            or ""
-        )
-        file_path = Path(src_path_str) if src_path_str else Path("unknown.md")
-        # Normalize metadata using filename + header
-        meta = normalize_metadata(file_path, md_text, base=src.metadata)
-        # Body after header separator (avoid indexing the header itself)
-        body = md_text.split("\n---\n", 1)[1] if "\n---\n" in md_text else md_text
-        if not body.strip():
-            continue
-        # Split BODY and attach the same normalized metadata to each chunk
-        for piece in splitter.split_text(body):
-            if piece.strip():
-                chunk_docs.append(Document(page_content=piece, metadata=meta))
-
-    logger.info(f"Number of generated chunks: {len(chunk_docs)}")
-
-    logger.info("Creating memory index...")
-    embedding = Embedder()
-    vector_database = Chroma(persist_directory=str(vector_store_path), embedding=embedding)
-    vector_database.from_chunks(chunk_docs)
-    logger.info(
-    f"[INDEX BUILT] files={len(sources)} chunks={len(chunk_docs)} "
-    f"chunk_size={chunk_size}, overlap={chunk_overlap} -> {vector_store_path}")
-    logger.info("Memory Index has been created successfully!")
+        path = Path(src.metadata.get("filepath") or src.metadata.get("source") or "unknown.md")
+        ticker = path.name.split("_",1)[0].upper() if "_" in path.name else ""
+        body = (src.page_content or "").split("\n---\n",1)[-1]
+        meta = {"source": str(path), "ticker": ticker}
+        docs += [Document(page_content=p, metadata=meta) for p in splitter.split_text(body) if p.strip()]
+    Chroma(persist_directory=str(vector_store_path), embedding=Embedder()).from_chunks(docs)
+    logger.info(f"[INDEX BUILT] {len(docs)} chunks saved to {vector_store_path}")
 
 # Infer ticker from metadata or source path.
 def infer_ticker(meta: dict) -> str:
@@ -200,25 +149,30 @@ def infer_ticker(meta: dict) -> str:
     return base.split("_", 1)[0].upper() if "_" in base else ""
 
 # Delete all vectors for a given ticker from the index.
-def purge_ticker_from_index(index, ticker: str) -> int:
-    ticker = (ticker or "").upper()
+def purge_ticker_from_index(index, ticker=None):
+    def _infer(m):
+        m = m or {}
+        t = (m.get("ticker") or "").upper()
+        if t: return t
+        src = (m.get("source") or "").split("/")[-1]
+        return src.split("_", 1)[0].upper() if "_" in src else ""
     col = getattr(index, "_collection", None)
-    if not col:
-        return 0
-    try:
-        before = col.count()
-        col.delete(where={"ticker": ticker})
-        after = col.count()
-        return before - after
-    except Exception:
-        got = col.get(include=["ids", "metadatas"])
-        purge_ids = []
-        for _id, meta in zip(got.get("ids", []), got.get("metadatas", [])):
-            if infer_ticker(meta) == ticker:
-                purge_ids.append(_id)
-        if purge_ids:
-            col.delete(ids=purge_ids)
-        return len(purge_ids)
+    if not col: return 0
+    tickers = {s.strip().upper() for s in os.getenv("PURGE_TICKERS", "").split(",") if s.strip()}
+    if ticker: tickers.add(ticker.upper())
+    total = 0
+    for tk in tickers:
+        try:
+            got = col.get(where={"ticker": tk}, include=["metadatas"])
+            ids = got.get("ids", [])
+        except Exception:
+            got = col.get(include=["metadatas"])
+            ids = [i for i, m in zip(got.get("ids", []), got.get("metadatas", [])) if _infer(m) == tk]
+        if ids:
+            col.delete(ids=ids)
+            total += len(ids)
+            print(f"[PURGE] {tk}: {len(ids)} removed")
+    return total
 
 # CLI test
 def get_args() -> argparse.Namespace:
@@ -260,8 +214,25 @@ def main(parameters):
 
 if __name__ == "__main__":
     try:
+        # If PURGE_TICKERS is set, run purge and exit early 
+        purge_env = os.getenv("PURGE_TICKERS", "").strip()
+        if purge_env:
+            
+            root = Path(__file__).resolve().parent.parent
+            vs_path = root / "vector_store" / "docs_index"
+            client = chromadb.PersistentClient(path=str(vs_path))
+            col = client.get_or_create_collection("docs")  # adjust collection name if needed
+
+            class _Idx: pass          # lightweight wrapper to mimic index
+            _Idx._collection = col
+            n = purge_ticker_from_index(_Idx())
+            print(f"[PURGE] done, total={n}")
+            sys.exit(0)
+
+        # Default path: normal memory building 
         args = get_args()
         main(args)
+
     except Exception as error:
         logger.error(f"An error occurred: {str(error)}", exc_info=True, stack_info=True)
         sys.exit(1)
