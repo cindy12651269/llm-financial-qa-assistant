@@ -1,41 +1,83 @@
 # RAG (Retrieval-Augmented Generation) ChatBot for Financial Knowledge
 
-[![CI](https://github.com/umbertogriffo/rag-chatbot/workflows/CI/badge.svg)](https://github.com/umbertogriffo/rag-chatbot/actions/workflows/ci.yaml)
+[![CI](https://github.com/cindyi12651269/rag-chatbot/actions/workflows/ci.yaml/badge.svg)](https://github.com/cindyi12651269/rag-chatbot/actions/workflows/ci.yaml)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 [![Code style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 ## Project Background and Credit
 
-This project is adapted from the open-source repository [umbertogriffo/rag-chatbot](https://github.com/umbertogriffo/rag-chatbot), which provides a robust foundation for building local RAG (Retrieval-Augmented Generation) applications using Llama.cpp, Chroma, and Streamlit.
+This project is adapted from the open-source repository [umbertogriffo/rag-chatbot](https://github.com/umbertogriffo/rag-chatbot), which provides a robust foundation for building local RAG (Retrieval-Augmented Generation) applications using **Llama.cpp**, **Chroma**, and **Streamlit**.
 
-While the core architecture, setup, and environment configuration are preserved, this fork has been modified to support a specialized use case: **context-aware financial knowledge Q&A**. Key enhancements include:
+While the core architecture, setup, and environment configuration are preserved, this fork has been significantly extended to support a specialized use case: **context-aware financial knowledge Q&A**.
 
-* Integration of domain-specific datasets in finance, trading, and investment.
-* Interface and prompt tuning to improve accuracy for financial terminology.
-* Clearer structure for showcasing multi-turn dialogue in a finance context.
+### Key Enhancements
 
-This project aims to serve as a practical example for applying RAG to vertical domains, particularly financial education, glossary lookup, and investment strategy explanation.
+* **Integration of domain-specific datasets** in finance, trading, and investment.
+* **Interface and prompt tuning** to improve accuracy for financial terminology.
+* **Clearer multi-turn dialogue handling**, including chat history gating to prevent topic misclassification.
+* **Stable demo layer (`demo.md`)** for consistent answers to financial theory and glossary questions.
+* **Refined routing design in `main()`** for predictable decision-making across Tools, RAG, Demo, and LLM fallback.
 
-> All setup instructions and technical content below are inherited from the original repository and have been reworded where necessary for clarity and continuity.
+---
+
+### Routing Design (Main Logic)
+
+The chatbot loop is designed for **reliability and transparency**, with four ordered stages:
+
+1. **Tools fast-path**
+   Direct API lookups (e.g., Yahoo Finance, SEC EDGAR, NewsAPI) for stock prices, EPS, revenues, and headlines.
+   → Ensures the fastest and most accurate answers when structured data is available.
+
+2. **JIT ingest + RAG retrieval**
+   Dynamically fetch and index SEC filings or investor documents into the vector store, then perform retrieval.
+   → Covers **fresh filings or tickers not included** in the preloaded dataset.
+
+3. **Demo RAG (`demo.md`)**
+   Uses a preloaded `demo.md` with stable financial theory Q\&A (e.g., Sharpe Ratio, Alpha vs. Beta, Bid-Ask Spread).
+   → Guarantees **consistent answers** for core finance concepts without relying on LLM variability.
+
+4. **LLM fallback**
+   When no tool results, filings, or demo entries apply, fall back to pure LLM reasoning.
+   → Handles **open-ended financial questions** (e.g., “Why is diversification important?”).
+
+---
+
+### Design Principles
+
+This layered routing ensures:
+
+* **Speed** → Tools first, avoiding unnecessary model calls.
+* **Accuracy** → Retrieval from filings when available.
+* **Stability** → Demo fallback for glossary/theory Q\&A.
+* **Coverage** → LLM fallback for general, open-ended finance questions.
 
 
 ## Table of contents
+* [Project Background and Credit](#project-background-and-credit)
+  * [Routing Design (Main Logic)](#routing-design-main-logic)
+
+* [Features](#features)
+  * [Hybrid Routing](#hybrid-routing-tools--rag--demo--llm)
+  * [JIT Ingestion](#jit-ingestion-on-demand-sec-filings)
+  * [Demo RAG](#demo-rag-stable-glossary-retrieval)
+  * [Chat History Gating](#chat-history-gating)
+  * [Chroma Score Normalization](#chroma-score-normalization)
 
 * [Introduction](#introduction)
 * [Prerequisites](#prerequisites)
-
   * [Install Poetry](#install-poetry)
 * [Bootstrap Environment](#bootstrap-environment)
-
   * [How to use the make file](#how-to-use-the-make-file)
 * [Using the Open-Source Models Locally](#using-the-open-source-models-locally)
-
   * [Supported Models](#supported-models)
 * [Supported Response Synthesis strategies](#supported-response-synthesis-strategies)
 * [Example Data](#example-data)
 * [Build the memory index](#build-the-memory-index)
 * [Run the Chatbot](#run-the-chatbot)
 * [Run the RAG Chatbot](#run-the-rag-chatbot)
+* [Routing Logic](#routing-logic)
+  * [Overview of stages](#overview-of-stages)
+  * [Example logs](#example-logs)
 * [How to debug the Streamlit app on Pycharm](#how-to-debug-the-streamlit-app-on-pycharm)
 * [References](#references)
 
@@ -185,8 +227,6 @@ streamlit run chatbot/chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --max
 streamlit run chatbot/chatbot_app.py -- --model starling --max-new-tokens 512
 ```
 
-![conversation-aware-chatbot.gif](images/conversation-aware-chatbot.gif)
-
 ## Run the RAG Chatbot
 
 To interact with a GUI with document-based RAG capabilities, use:
@@ -199,8 +239,6 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b 
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --k 2 --synthesis-strategy async-tree-summarization
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model starling --k 2 --synthesis-strategy async-tree-summarization
 ```
-
-![rag_chatbot_example.gif](images%2Frag_chatbot_example.gif)
 
 
 ## Example Questions
@@ -231,28 +269,20 @@ You should see matching outputs for these examples:
 > Currently, CY values are resolved using the same FY data from SEC EDGAR and may represent mapped fiscal periods depending on the company's reporting calendar.
 
 ---
-### 🧪 RAG — Demo Reference (from `demo.md`)
-> These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
-
-* *What is the Sharpe Ratio and how is it calculated?*
-* *What is a "bid-ask spread" in stock trading?*
-* *Can you explain the difference between Alpha and Beta in portfolio theory?*
----
 ### 📄 Retrieval-based (RAG) — Preloaded Data
 > **Note:** These are preloaded in `vector_store` (via CLI `ingest_pipeline.py`). They will **not** trigger JIT ingestion because the `.md` files already exist in `docs_index`.
 
-* *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?*
-* *What investments will Microsoft continue according to its official filings in 2025?*
-* *According to Tesla’s Q2 2025 10-Q, what factors affected automotive gross margin in the quarter? Provide cited sentences.*
+* *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?* → **HYBRID**
+* *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
+* *According to Tesla’s Q2 2025 10-Q, what factors affected automotive gross margin in the quarter? Provide cited sentences.* → **RAG**
 
 ---
-
 ### ⚡ JIT Retrieval-based (RAG) — Just-in-time Tests
 > **Note:** These companies/questions are **not** in `PRELOAD` and have no pre-generated `.md` files. UI testing will trigger live JIT ingestion (SEC EDGAR / IR / slides).
 
-* *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?*
-* *What risks did Netflix highlight in its Q1 2025?*
-* *What initiatives did Adobe highlight as drivers of Digital Media growth for business professionals and consumers in Q2 2025?*
+* *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?* → **HYBRID JIT**
+* *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
+* *What initiatives did Adobe highlight as drivers of Digital Media growth for business professionals and consumers in Q2 2025?* → **JIT→RAG**
 ---
 #### 🔄 After JIT Ingestion — Sync New Docs
 Run these steps to reset and sync your JIT environment:
@@ -282,6 +312,14 @@ python chatbot/memory_builder.py --chunk-size 1000 --chunk-overlap 50
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization
 ```
 ---
+### 🧪 RAG — Demo Reference (from `demo.md`)
+> These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
+
+* *What is the Sharpe Ratio and how is it calculated?*
+* *What is a "bid-ask spread" in stock trading?*
+* *Can you explain the difference between Alpha and Beta in portfolio theory?*
+---
+
 ### 💬 General (LLM) — concept or theory only
 > **Note:** Pure LLM reasoning; does **not** call APIs or retrieve documents.
 
@@ -290,12 +328,15 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b
 * *Why is diversification important in portfolio construction?*
 
 ---
-
 ### 🔍 Smoke tests
 > **Note:** Quick sanity checks for verifying correct tool and fallback routing.
-1. *AAPL latest price* → **Tools**
-2. *TSLA Q4 2023 EPS* → **Tools**
-3. *Explain “market gravity”* → **Claude** (if no document/tool hit)
+1. *What is the latest stock price of AAPL?* → **Tools**
+2. *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?* → **HYBRID**
+3. *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
+4. *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?* → **HYBRID JIT**
+5. *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
+6. *What is the Sharpe Ratio and how is it calculated?* → **RAG DEMO**
+7. *What does the P/E ratio tell investors about a company?* → **LLM**
 
 ## How to debug the Streamlit app on Pycharm
 
