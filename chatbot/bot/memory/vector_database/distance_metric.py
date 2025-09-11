@@ -1,5 +1,6 @@
 import math
 from enum import Enum
+import math
 
 
 class DistanceMetric(Enum):
@@ -10,7 +11,8 @@ class DistanceMetric(Enum):
 
 def cosine_relevance_score_fn(distance: float) -> float:
     """Normalize the distance to a score on a scale [0, 1]."""
-    return 1.0 - distance
+    score = 1.0 - distance
+    return max(0.0, min(1.0, score))
 
 
 def euclidean_relevance_score_fn(distance: float) -> float:
@@ -23,18 +25,13 @@ def euclidean_relevance_score_fn(distance: float) -> float:
 
 def max_inner_product_relevance_score_fn(distance: float) -> float:
     """Normalize the distance to a score on a scale [0, 1]."""
-    if distance > 0:
-        return 1.0 - distance
-
-    return -1.0 * distance
-
+    return 1 / (1 + math.exp(-distance))
 
 SUPPORTED_RELEVANCE_SCORE_FUNCTIONS = {
     DistanceMetric.COSINE: cosine_relevance_score_fn,
     DistanceMetric.L2: euclidean_relevance_score_fn,
     DistanceMetric.IP: max_inner_product_relevance_score_fn,
 }
-
 
 def get_relevance_score_fn(distance_metric: DistanceMetric):
     func = SUPPORTED_RELEVANCE_SCORE_FUNCTIONS.get(distance_metric)

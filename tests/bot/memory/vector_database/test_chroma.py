@@ -7,6 +7,7 @@ from chatbot.entities.document import Document
 
 @pytest.fixture
 def chroma_instance(tmp_path):
+    # Persist to a tmp dir so each test has an isolated store
     return Chroma(embedding=Embedder(), persist_directory=str(tmp_path))
 
 
@@ -58,8 +59,9 @@ def test_similarity_search_with_threshold_basic(chroma_instance):
     assert 0.0 <= sources[0]["score"] <= 1.0
     # shape remains stable
     assert "source" in sources[0]
-    assert "organization" in sources[0]  # may be empty if not provided
-    assert "report_type" in sources[0]   # may be empty if not provided
+    assert "organization" in sources[0]  # may be empty string if not provided
+    assert "report_type" in sources[0]   # may be empty string if not provided
+
 
 def test_similarity_search_with_threshold_kpi_excludes_news(chroma_instance):
     texts = [
@@ -83,6 +85,7 @@ def test_similarity_search_with_threshold_kpi_excludes_news(chroma_instance):
     for s in sources:
         assert s.get("source_type", "").lower() != "news"
 
+
 def test_similarity_search_with_threshold_trusted_boost_fields(chroma_instance):
     texts = [
         "Management Discussion and Analysis: revenue grew due to pricing.",
@@ -100,11 +103,13 @@ def test_similarity_search_with_threshold_trusted_boost_fields(chroma_instance):
     )
 
     assert len(results) >= 1
-    # Shape & fields exist
+    # Shape & fields exist; scores are normalized
     for s in sources:
         assert "score" in s
+        assert 0.0 <= s["score"] <= 1.0
         assert "source_type" in s
         assert "section" in s
+
 
 def test_similarity_search_with_score(chroma_instance):
     texts = ["Alphabet's advertising segment remains the primary revenue driver."]
@@ -128,5 +133,3 @@ def test_similarity_search_with_relevance_scores(chroma_instance):
     assert isinstance(results[0][1], float)
     assert 0.0 <= results[0][1] <= 1.0
 
-
-print(Document.__module__)

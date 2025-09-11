@@ -234,9 +234,9 @@ You should see matching outputs for these examples:
 ### 🧪 RAG — Demo Reference (from `demo.md`)
 > These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
 
-* *Define the Sharpe ratio and how to interpret it.*
-* *Explain the difference between alpha and beta in portfolio theory.*
-* *What is a "bid-ask spread" in stock trading, and why does it matter?*
+* *What is the Sharpe Ratio and how is it calculated?*
+* *What is a "bid-ask spread" in stock trading?*
+* *Can you explain the difference between Alpha and Beta in portfolio theory?*
 ---
 ### 📄 Retrieval-based (RAG) — Preloaded Data
 > **Note:** These are preloaded in `vector_store` (via CLI `ingest_pipeline.py`). They will **not** trigger JIT ingestion because the `.md` files already exist in `docs_index`.

@@ -10,7 +10,7 @@ from chatbot.document_loader.text_splitter import create_recursive_text_splitter
 from typing import List
 import streamlit as st
 from chatbot.bot.client.lama_cpp_client import LamaCppClient
-from chatbot.bot.conversation.chat_history import ChatHistory
+from chatbot.bot.conversation.chat_history import ChatHistory, HistoryContext, should_use_history
 from chatbot.bot.conversation.conversation_handler import answer_with_context, refine_question
 from chatbot.bot.conversation.ctx_strategy import (
     BaseSynthesisStrategy,
@@ -246,23 +246,45 @@ def display_messages_from_history():
                 st.markdown(msg["content"])
 
 # Step 5: Routing logic helpers
+# Return one of: HYBRID, HYBRID JIT, JIT→RAG, RAG, TOOLS, RAG DEMO, LLM.
+def _decide_route_kind(used_jit: bool, facts_md, fact_kind: str | None, retrieved_docs, demo: bool = False) -> str:  
+    if demo:
+        return "RAG DEMO"
+    if used_jit and facts_md:
+        return "HYBRID JIT"
+    if used_jit and not facts_md:
+        return "JIT→RAG"
+    if facts_md:
+        return "HYBRID"
+    if retrieved_docs:
+        return "RAG"
+    return "LLM"
+
 # Produce a single, human-friendly path line.
 def _route_line(kind: str, *, rag_docs: int | None = None, fact: str | None = None, ticker: str | None = None) -> str:
+    # HYBRID / HYBRID JIT
     if kind in ("HYBRID", "HYBRID JIT"):
         fact_label = "metric" if fact == "metric" else "price"
         tail = f" (RAG docs={rag_docs})" if rag_docs is not None else ""
         tick = f" [ticker={ticker}]" if ticker else ""
         return f"{kind} — {fact_label} fact + explanation{tail}{tick}"
+    # JIT→RAG
     if kind == "JIT→RAG":
         tick = f" [ticker={ticker}]" if ticker else ""
         return f"JIT→RAG docs={rag_docs or 0}{tick}"
+    # TOOLS
     if kind == "TOOLS":
         return f"TOOLS({fact})" if fact in ("metric", "price") else "TOOLS"
+    # RAG
     if kind == "RAG":
         return f"RAG docs={rag_docs or 0}"
-    if kind == "CLAUDE":
-        return "CLAUDE (no retrieval)"
+    # RAG DEMO
+    if kind == "RAG DEMO":
+        return f"RAG DEMO docs={rag_docs or 0}"
+    if kind == "LLM":
+        return "LLM (no retrieval)"
     return kind
+
 
 # Return tool payload from a doc (only when source_type == tool).
 def tool_payload(doc):
@@ -451,6 +473,46 @@ def jit_and_retrieve(index, refined_query: str, tkr: str | None,
 
     return docs, rebuild_sources(docs)
 
+# Retrieve only from demo.md; return (docs, sources).
+def retrieve_demo_docs(index, refined_query: str, k: int = 3):
+    if _TRACE:
+        _LOG.info("[DEMO] query=%r k=%s", refined_query, k)
+
+    # Wider net + no score threshold; we'll filter by filename afterwards
+    docs, _ = index.similarity_search_with_threshold(
+        query=refined_query,
+        k=max(k, 8),
+        threshold=0.0,
+        exclude_tools=True
+    )
+
+    if _TRACE:
+        for i, d in enumerate(docs or []):
+            src = ((getattr(d, "metadata", {}) or {}).get("source") or "")
+            _LOG.info("[DEMO] raw_hit[%d] source=%s", i, src)
+
+    # Robust filename filter for demo.md
+    demo_docs = []
+    for d in (docs or []):
+        src = ((getattr(d, "metadata", {}) or {}).get("source") or "")
+        src_low = src.lower()
+        # keep if endswith '/demo.md' or '\demo.md' or basename == 'demo.md'
+        keep = (
+            src_low.endswith("/demo.md")
+            or src_low.endswith("\\demo.md")
+            or (src_low.split("/")[-1] == "demo.md")
+            or (src_low.split("\\")[-1] == "demo.md")
+        )
+        if _TRACE:
+            _LOG.info("[DEMO] filter: %s → keep=%s", src, keep)
+        if keep:
+            demo_docs.append(d)
+
+    if _TRACE:
+        _LOG.info("[DEMO] kept=%d after demo-only filter", len(demo_docs))
+
+    return demo_docs, rebuild_sources(demo_docs)
+
 # Answer with the currently loaded base LLM when no retrieved documents exist.
 # If that fails, fall back to Claude and render consistently in HTML.
 def run_llm_or_claude(user_input: str, llm, ctx_synthesis_strategy,
@@ -601,111 +663,168 @@ def stream_answer(llm, ctx_synthesis_strategy, user_input, facts_md, retrieved_d
 
 # Step 6: Main logic for launching financial RAG chatbot
 def main(parameters) -> None:
-    # 1) init UI/LLM/index/history
+    # 1) Init UI/LLM/index/history
     root_folder        = Path(__file__).resolve().parent.parent
     model_folder       = root_folder / "models"
     vector_store_path  = root_folder / "vector_store" / "docs_index"
     Path(model_folder).parent.mkdir(parents=True, exist_ok=True)
 
-    model_name                 = parameters.model
-    synthesis_strategy_name    = parameters.synthesis_strategy
+    model_name              = parameters.model
+    synthesis_strategy_name = parameters.synthesis_strategy
 
     init_page(root_folder)
     llm = load_llm_client(model_folder, model_name)
-    chat_history = init_chat_history(2)
+    chat_history = ChatHistory(total_length=2) # Use ChatHistory (window=2 by default)
     ctx_synthesis_strategy = load_ctx_synthesis_strategy(synthesis_strategy_name, _llm=llm)
     index = load_index(vector_store_path)
     reset_chat_history(chat_history)
     init_welcome_message()
     display_messages_from_history()
 
-    # 2) read user input
+    # 2) Read user input
     user_input = st.chat_input("Ask a financial question (e.g. P/E ratio, ESG risk, portfolio)…")
     if not user_input:
         return
-
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
-    # 3) intent + guarded ticker
-    def set_route(kind: str, *, rag_docs: int | None = None, fact: str | None = None, ticker: str | None = None):
+
+    # 3) Intent + guarded ticker
+    def set_route(kind: str, *, rag_docs: int | None = None,
+                  fact: str | None = None, ticker: str | None = None):
         st.session_state.last_route = kind
         if _TRACE:
-            _LOG.info("[PATH] " + _route_line(kind, rag_docs=rag_docs, fact=fact, ticker=ticker))
-    
-    # refine + intent + ticker (guarded; no forced usage) 
-    with st.spinner("📊 Refining your question and preparing retrieval…"):
-        refined_query = refine_question(llm, user_input, chat_history=chat_history)
-        intent        = detect_intent(refined_query)           # returns dict: {"price":bool,"metric":bool,"explain":bool,"compare":bool}
-        tkr           = resolve_ticker_guarded(user_input)     # returns None for generic concept questions
+            _LOG.info("[PATH] " + _route_line(kind, rag_docs=rag_docs,
+                                              fact=fact, ticker=ticker))
 
-        # LLM-only: no ticker and no numeric intent → answer directly with current model
-        if not tkr and not (intent["price"] or intent["metric"]):
-            run_llm_or_claude(
-                user_input=user_input,
-                llm=llm,
-                ctx_synthesis_strategy=ctx_synthesis_strategy,
-                chat_history=chat_history,
-                model_name=model_name,
-                _LOG=_LOG,
-                set_route=set_route,
-            )
-            return
-        # 4) tools fast-path (capture fact for HYBRID if explanatory/compare)
-        # Tools fast-path (stock → metric → news). May capture facts for HYBRID. 
+    # 4) Refine query + detect intent + resolve ticker
+    with st.spinner("📊 Refining your question and preparing retrieval…"):
+        # Provisional intent/ticker based on raw user_input
+        provisional_intent = detect_intent(user_input)
+        tkr           = resolve_ticker_guarded(user_input)
+        if _TRACE:
+           _LOG.info("[ROUTING] start: provisional_intent=%s tkr=%s last_tkr=%s",
+                     provisional_intent, tkr, st.session_state.get("last_ticker"))
+        facts_md: str | None = None
+        fact_kind: str | None = None
+        retrieved_docs = []
+        sources = []
+        used_jit_box = {"flag": False}
+        
+        # Decide whether to include history when refining
+        recent_users = [m["content"] for m in st.session_state.get("messages", []) if m.get("role") == "user"]
+        hist_ctx = HistoryContext(
+            curr_text=user_input,
+            curr_ticker=tkr,
+            intent=provisional_intent,
+            last_ticker=st.session_state.get("last_ticker"),
+            recent_user_messages=recent_users,
+        )
+        use_hist = should_use_history(hist_ctx, trace=_TRACE, logger=_LOG)
+        if _TRACE:
+           _LOG.info("[HISTORY] use_hist=%s (win=%s, recent_users=%d)",
+                     use_hist, getattr(chat_history, "total_length", "?"), len(recent_users))
+
+        refined_query = refine_question(
+            llm,
+            user_input,
+            chat_history=chat_history if use_hist else None
+        )
+        # Final intent from refined query (keeps the original behavior)
+        intent = detect_intent(refined_query)
+        if _TRACE:
+           _LOG.info("[REFINE] refined_query=%r", refined_query)
+           _LOG.info("[INTENT] final=%s", intent)
+
+        # Step 1: Tools fast-path 
         want_hybrid = bool(intent["explain"] or intent["compare"])
         facts_md, fact_kind, answered = run_tools_fastpath(refined_query, want_hybrid)
-        if answered:
-            # tools already rendered final answer (non-explanatory path)
+        if _TRACE:
+           _LOG.info("[TOOLS] answered=%s fact_kind=%s has_facts=%s",
+                     answered, fact_kind, bool(facts_md))
+        if answered: # Update session state for next turn and return
+            st.session_state["last_ticker"] = tkr
+            chat_history.append(user_input)
             return
-        # 5) JIT ingest + RAG retrieval
-        # JIT + RAG retrieval (anchored by ticker if present) 
-        used_jit_box = {"flag": False}
-        retrieved_docs, sources = jit_and_retrieve(
-            index=index,
-            refined_query=refined_query,
-            tkr=tkr,                 # ← use 'tkr' (matches function)
-            k=parameters.k,
-            used_jit_out=used_jit_box,  # ← use 'used_jit_out' (matches function)
-        )
 
-        # 6) fallback to base LLM; Claude only if that fails
-        if not (retrieved_docs or facts_md):
-           run_llm_or_claude(
-               user_input=user_input,
-               llm=llm,
-               ctx_synthesis_strategy=ctx_synthesis_strategy,
-               chat_history=chat_history,
-               model_name=model_name,
-               _LOG=_LOG,
-               set_route=set_route,
-           )
-           return
+        # Step 2: JIT ingest + RAG retrieval 
+        if tkr:
+            if _TRACE:
+               _LOG.info("[RAG] call jit_and_retrieve tkr=%s k=%s", tkr, parameters.k)
+            retrieved_docs, sources = jit_and_retrieve(
+                index=index,
+                refined_query=refined_query,
+                tkr=tkr,
+                k=parameters.k,
+                used_jit_out=used_jit_box,
+            )
 
-        # 7) render header (route + sources) in HTML
-        final_kind = (
-            "HYBRID JIT" if (used_jit_box["flag"] and facts_md) else
-            ("JIT→RAG"   if (used_jit_box["flag"] and not facts_md) else
-            ("HYBRID"    if facts_md else "RAG"))
-        )
-        set_route(
-            final_kind,
-            rag_docs=len(retrieved_docs),
-            fact=(fact_kind if facts_md else None),
-            ticker=(tkr if used_jit_box["flag"] else None),
-        )
-        with st.chat_message("assistant"):
-            render_header_html(final_kind, facts_md, sources)
+        if retrieved_docs or facts_md:
+            final_kind = _decide_route_kind(
+                used_jit=used_jit_box["flag"],
+                facts_md=facts_md,
+                fact_kind=fact_kind,
+                retrieved_docs=retrieved_docs,
+                demo=False,
+            )
+            set_route(final_kind,
+                      rag_docs=len(retrieved_docs),
+                      fact=(fact_kind if facts_md else None),
+                      ticker=(tkr if used_jit_box["flag"] else None))
+            with st.chat_message("assistant"):
+                render_header_html(final_kind, facts_md, sources)
 
-    # 8) stream final answer (inject TOOL FACT + docs when present)
-    stream_answer(
-        llm=llm,
-        ctx_synthesis_strategy=ctx_synthesis_strategy,
-        user_input=user_input,
-        facts_md=facts_md,
-        retrieved_docs=retrieved_docs,
-        chat_history=chat_history,
-    )
+            stream_answer(
+                llm=llm,
+                ctx_synthesis_strategy=ctx_synthesis_strategy,
+                user_input=user_input,
+                facts_md=facts_md,
+                retrieved_docs=retrieved_docs,
+                chat_history=chat_history,
+            )
+            # Update session state & history window
+            st.session_state["last_ticker"] = tkr
+            chat_history.append(user_input)
+            return
+
+        # Step 3: Demo RAG (demo.md) 
+        if _TRACE:
+           _LOG.info("[DEMO] gate: has_docs=%s has_facts=%s tkr=%s → try demo",
+                     bool(retrieved_docs), bool(facts_md), tkr)
+        demo_docs, demo_sources = retrieve_demo_docs(index, refined_query, k=parameters.k)
+        if demo_docs:
+            final_kind = _decide_route_kind(False, None, None, demo_docs, demo=True)
+            set_route(final_kind, rag_docs=len(demo_docs))
+            with st.chat_message("assistant"):
+                render_header_html(final_kind, None, demo_sources)
+
+            stream_answer(
+                llm=llm,
+                ctx_synthesis_strategy=ctx_synthesis_strategy,
+                user_input=user_input,
+                facts_md=None,
+                retrieved_docs=demo_docs,
+                chat_history=chat_history,
+            )
+            st.session_state["last_ticker"] = tkr
+            chat_history.append(user_input)
+            return
+
+        # Step 4: LLM fallback 
+        if _TRACE:
+           _LOG.info("[ROUTING] FALLBACK=LLM (no rag/docs, no demo)")
+        set_route("LLM")
+        run_llm_or_claude(
+            user_input=user_input,
+            llm=llm,
+            ctx_synthesis_strategy=ctx_synthesis_strategy,
+            chat_history=chat_history,
+            model_name=model_name,
+            _LOG=_LOG,
+            set_route=set_route,
+        )
+        st.session_state["last_ticker"] = tkr
+        chat_history.append(user_input)
 
 # Step 7: Command-line interface (CLI) for financial RAG chatbot
 # CLI arguments to select model & strategy
