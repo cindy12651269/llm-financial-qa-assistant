@@ -1,6 +1,6 @@
 # RAG (Retrieval-Augmented Generation) ChatBot for Financial Knowledge
 
-[![CI](https://github.com/cindyi12651269/rag-chatbot/actions/workflows/ci.yaml/badge.svg)](https://github.com/cindyi12651269/rag-chatbot/actions/workflows/ci.yaml)
+[![CI](https://github.com/cindy12651269/llm-financial-qa-assistant/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/cindy12651269/llm-financial-qa-assistant/actions/workflows/ci.yaml)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 [![Code style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
