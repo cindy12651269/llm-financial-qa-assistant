@@ -4,6 +4,74 @@
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 [![Code style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
+## Table of contents
+* [Introduction](#introduction)
+* [Project Background and Credit](#project-background-and-credit)
+  * [Routing Design (Main Logic)](#routing-design-main-logic)
+* [Features](#features)
+  * [Hybrid Routing](#hybrid-routing-tools--rag--demo--llm)
+  * [JIT Ingestion](#jit-ingestion-on-demand-sec-filings)
+  * [Demo RAG](#demo-rag-stable-glossary-retrieval)
+  * [Chat History Gating](#chat-history-gating)
+  * [Chroma Score Normalization](#chroma-score-normalization)
+* [Prerequisites](#prerequisites)
+  * [Install Poetry](#install-poetry)
+* [Bootstrap Environment](#bootstrap-environment)
+  * [How to use the make file](#how-to-use-the-make-file)
+* [Using the Open-Source Models Locally](#using-the-open-source-models-locally)
+  * [Supported Models](#supported-models)
+* [Supported Response Synthesis strategies](#supported-response-synthesis-strategies)
+* [Build the memory index](#build-the-memory-index)
+* [Run the Chatbot](#run-the-chatbot)
+* [Run the RAG Chatbot](#run-the-rag-chatbot)
+* [Routing Logic](#routing-logic)
+  * [Overview of stages](#overview-of-stages)
+  * [Example logs](#example-logs)
+* [How to debug the Streamlit app on Pycharm](#how-to-debug-the-streamlit-app-on-pycharm)
+* [References](#references)
+
+## Introduction
+
+This project combines the power of [Llama.cpp](https://github.com/abetlen/llama-cpp-python), [Chroma](https://github.com/chroma-core/chroma), and [Streamlit](https://discuss.streamlit.io/) to build two complementary applications:
+
+* A **conversation-aware chatbot** (ChatGPT-like experience).
+* A **RAG (Retrieval-Augmented Generation) chatbot** for finance.
+
+The RAG chatbot works by taking a collection of Markdown files as input and, when asked a question, providing an answer based on the most relevant context retrieved from those files. This ensures responses are grounded in documents rather than relying purely on generative reasoning.
+
+![rag-chatbot-architecture-1.png](images/rag-chatbot-architecture-1.png)
+
+> \[!NOTE]
+> We refactored the `RecursiveCharacterTextSplitter` from LangChain to chunk Markdown files effectively without requiring LangChain as a dependency.
+
+The **Memory Builder** component loads Markdown pages from the `docs` folder, splits them into sections, computes embeddings with [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), and stores them in the [Chroma](https://github.com/chroma-core/chroma) vector database. At runtime, the chatbot retrieves the most relevant sections as context before generating answers with the local LLM.
+
+Additionally, the chatbot maintains chat history, selectively reusing context when queries are semantically related. To manage context length and avoid drift, we implemented three synthesis strategies:
+
+* **Create and Refine the Context** — sequentially refine answers through retrieved chunks.
+    * ![create-and-refine-the-context.png](images/create-and-refine-the-context.png)
+* **Hierarchical Summarization of Context** — answer each chunk independently, then   hierarchically combine the answers.
+    * ![hierarchical-summarization.png](images/hierarchical-summarization.png)
+* **Async Hierarchical Summarization** — parallelized version of the Hierarchical Summarization of Context which lead to big speedups in response synthesis.
+
+Beyond the original architecture, this fork introduces a **layered routing system** in `main()` designed for reliability.
+
+1. **Tools fast-path** — Direct API lookups (Yahoo Finance, SEC EDGAR, NewsAPI) for stock prices, EPS, revenues, and headlines.
+2. **JIT ingest + RAG retrieval** — Dynamically fetch and index SEC filings or investor docs into the vector store, then run retrieval.
+3. **Demo RAG (`demo.md`)** — Stable fallback for financial theory and glossary Q\&A (Sharpe Ratio, Alpha vs. Beta, Bid-Ask Spread).
+4. **LLM fallback** — Pure reasoning when no data is available, ensuring no query is left unanswered.
+
+This layered design balances **speed** (tools first), **accuracy** (retrieval from filings), **stability** (demo fallback), and **coverage** (LLM for open-ended concepts).
+
+The system demonstrates how hybrid retrieval, structured data, and fallback layers can work together in a real financial assistant. Users benefit from:
+
+* **Reliable API integration** for up-to-date metrics.
+* **Retrieval grounding** for company filings and reports.
+* **Consistent glossary answers** via demo.md.
+* **Robust fallback** to LLM reasoning when no structured data applies.
+
+Finally, this project is driven by several open-source models such as **Llama 3.2**, **Phi-3.5**, **Qwen 2.5**, and others (see [Supported Open-Source Models](#supported-open-source-models)). It also comes with carefully prepared [Example Questions](#example-questions), covering Tools, Preloaded RAG, JIT RAG, Demo, and LLM fallback — ensuring end-to-end verification across all routing paths.
+
 ## Project Background and Credit
 
 This project is adapted from the open-source repository [umbertogriffo/rag-chatbot](https://github.com/umbertogriffo/rag-chatbot), which provides a robust foundation for building local RAG (Retrieval-Augmented Generation) applications using **Llama.cpp**, **Chroma**, and **Streamlit**.
@@ -45,83 +113,11 @@ The chatbot loop is designed for **reliability and transparency**, with four ord
 ### Design Principles
 
 This layered routing ensures:
-
 * **Speed** → Tools first, avoiding unnecessary model calls.
 * **Accuracy** → Retrieval from filings when available.
 * **Stability** → Demo fallback for glossary/theory Q\&A.
 * **Coverage** → LLM fallback for general, open-ended finance questions.
 
-
-## Table of contents
-* [Project Background and Credit](#project-background-and-credit)
-  * [Routing Design (Main Logic)](#routing-design-main-logic)
-
-* [Features](#features)
-  * [Hybrid Routing](#hybrid-routing-tools--rag--demo--llm)
-  * [JIT Ingestion](#jit-ingestion-on-demand-sec-filings)
-  * [Demo RAG](#demo-rag-stable-glossary-retrieval)
-  * [Chat History Gating](#chat-history-gating)
-  * [Chroma Score Normalization](#chroma-score-normalization)
-
-* [Introduction](#introduction)
-* [Prerequisites](#prerequisites)
-  * [Install Poetry](#install-poetry)
-* [Bootstrap Environment](#bootstrap-environment)
-  * [How to use the make file](#how-to-use-the-make-file)
-* [Using the Open-Source Models Locally](#using-the-open-source-models-locally)
-  * [Supported Models](#supported-models)
-* [Supported Response Synthesis strategies](#supported-response-synthesis-strategies)
-* [Example Data](#example-data)
-* [Build the memory index](#build-the-memory-index)
-* [Run the Chatbot](#run-the-chatbot)
-* [Run the RAG Chatbot](#run-the-rag-chatbot)
-* [Routing Logic](#routing-logic)
-  * [Overview of stages](#overview-of-stages)
-  * [Example logs](#example-logs)
-* [How to debug the Streamlit app on Pycharm](#how-to-debug-the-streamlit-app-on-pycharm)
-* [References](#references)
-
-## Introduction
-
-This project combines the power
-of [Lama.cpp](https://github.com/abetlen/llama-cpp-python), [Chroma](https://github.com/chroma-core/chroma)
-and [Streamlit](https://discuss.streamlit.io/) to build:
-
-* a Conversation-aware Chatbot (ChatGPT like experience).
-* a RAG (Retrieval-augmented generation) ChatBot.
-
-The RAG Chatbot works by taking a collection of Markdown files as input and, when asked a question, provides the
-corresponding answer
-based on the context provided by those files.
-
-![rag-chatbot-architecture-1.png](images/rag-chatbot-architecture-1.png)
-
-> [!NOTE]
-> We decided to grab and refactor the `RecursiveCharacterTextSplitter` class from `LangChain` to effectively chunk
-> Markdown files without adding LangChain as a dependency.
-
-The `Memory Builder` component of the project loads Markdown pages from the `docs` folder.
-It then divides these pages into smaller sections, calculates the embeddings (a numerical representation) of these
-sections with the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
-`sentence-transformers`, and saves them in an embedding database called [Chroma](https://github.com/chroma-core/chroma)
-for later use.
-
-When a user asks a question, the RAG ChatBot retrieves the most relevant sections from the Embedding database.
-Since the original question can't be always optimal to retrieve for the LLM, we first prompt an LLM to rewrite the
-question, then conduct retrieval-augmented reading.
-The most relevant sections are then used as context to generate the final answer using a local language model (LLM).
-Additionally, the chatbot is designed to remember previous interactions. It saves the chat history and considers the
-relevant context from previous conversations to provide more accurate answers.
-
-To deal with context overflows, we implemented three approaches:
-
-* `Create And Refine the Context`: synthesize a responses sequentially through all retrieved contents.
-    * ![create-and-refine-the-context.png](images/create-and-refine-the-context.png)
-* `Hierarchical Summarization of Context`: generate an answer for each relevant section independently, and then
-  hierarchically combine the answers.
-    * ![hierarchical-summarization.png](images/hierarchical-summarization.png)
-* `Async Hierarchical Summarization of Context`: parallelized version of the Hierarchical Summarization of Context which
-  lead to big speedups in response synthesis.
 
 ## Prerequisites
 
@@ -200,12 +196,6 @@ format.
 | `tree-summarization` Tree Summarization                                 | ✅         |       |
 | `async-tree-summarization` - **Recommended** - Async Tree Summarization | ✅         |       |
 
-## Example Data
-
-You could download some Markdown pages from
-the [Blendle Employee Handbook](https://blendle.notion.site/Blendle-s-Employee-Handbook-7692ffe24f07450785f093b94bbe1a09)
-and put them under `docs`.
-
 ## Build the memory index
 
 Run:
@@ -239,7 +229,6 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b 
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --k 2 --synthesis-strategy async-tree-summarization
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model starling --k 2 --synthesis-strategy async-tree-summarization
 ```
-
 
 ## Example Questions
 
