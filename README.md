@@ -9,11 +9,13 @@
 * [Project Background and Credit](#project-background-and-credit)
   * [Routing Design (Main Logic)](#routing-design-main-logic)
 * [Features](#features)
-  * [Hybrid Routing](#hybrid-routing-tools--rag--demo--llm)
-  * [JIT Ingestion](#jit-ingestion-on-demand-sec-filings)
-  * [Demo RAG](#demo-rag-stable-glossary-retrieval)
+  * [Tools fast-path](#tools-fast-path)
+  * [JIT Ingestion](#jit-ingestion)
+  * [Demo RAG](#demo-rag)
+  * [LLM Fallback](#llm-fallback)
   * [Chat History Gating](#chat-history-gating)
   * [Chroma Score Normalization](#chroma-score-normalization)
+  * [Example Questions](#example-questions)
 * [Prerequisites](#prerequisites)
   * [Install Poetry](#install-poetry)
 * [Bootstrap Environment](#bootstrap-environment)
@@ -24,9 +26,6 @@
 * [Build the memory index](#build-the-memory-index)
 * [Run the Chatbot](#run-the-chatbot)
 * [Run the RAG Chatbot](#run-the-rag-chatbot)
-* [Routing Logic](#routing-logic)
-  * [Overview of stages](#overview-of-stages)
-  * [Example logs](#example-logs)
 * [How to debug the Streamlit app on Pycharm](#how-to-debug-the-streamlit-app-on-pycharm)
 * [References](#references)
 
@@ -90,10 +89,11 @@ While the core architecture, setup, and environment configuration are preserved,
 
 ### Routing Design (Main Logic)
 
-The chatbot loop is designed for **reliability and transparency**, with four ordered stages:
+The chatbot follows a **layered decision pipeline** implemented in  
+[`main()` in `rag_chatbot_app.py`](chatbot/rag_chatbot_app.py). The chatbot loop is designed for **reliability and transparency**, and this routing design ensures that the system always selects the most appropriate path for a given query:
 
 1. **Tools fast-path**
-   Direct API lookups (e.g., Yahoo Finance, SEC EDGAR, NewsAPI) for stock prices, EPS, revenues, and headlines.
+   Direct API lookups (Alpha Vantage, Yahoo Finance, SEC EDGAR, NewsAPI). 
    → Ensures the fastest and most accurate answers when structured data is available.
 
 2. **JIT ingest + RAG retrieval**
@@ -118,6 +118,187 @@ This layered routing ensures:
 * **Stability** → Demo fallback for glossary/theory Q\&A.
 * **Coverage** → LLM fallback for general, open-ended finance questions.
 
+## Features
+
+### Tools fast-path
+
+The first layer checks whether the question can be answered by structured APIs.  
+This includes **Stock Price Queries** (Yahoo Finance / Alpha Vantage),  
+**Company Financial Data** (SEC EDGAR companyfacts), and  
+**News and Headlines** (NewsAPI).  
+
+The goal is to **return factual answers immediately**, avoiding unnecessary RAG or LLM calls.  
+If the user asks for explanation or comparison, the system switches to **hybrid mode**: factual results are returned **together with LLM commentary** for better readability.  
+
+*Entrypoints:*  
+- [`run_tools_fastpath()`](chatbot/rag_chatbot_app.py) → decides whether API results can answer directly.  
+- [`financial_fetcher.py`](chatbot/financial_fetcher.py) → contains the core API integrations and CLI tests, including:  
+  `compose_metric_header()`, `fallback_news_lookup()`, `fallback_stock_lookup()`,  
+  `fallback_financial_metric_lookup()`, `resolve_ticker_guarded()`, `rebuild_sources()`.  
+
+These are the primary functions developers should review when debugging or extending the tool layer. 
+
+### JIT Ingestion + RAG Retrieval 
+
+If users are not requesting financial data provided by the API tools, the system switches to the **RAG retrieval mode**.  
+Here, the chatbot dynamically fetches **SEC filings, investor relations PDFs, or earnings slides** for the ticker in question.  
+
+**JIT ingestion** will be activated when the company is **not included in the preloaded ticker set**.  
+For example, this allows queries like *“What risks did Netflix highlight in Q1 2025?”* to be answered directly from filings, even if NFLX is not part of the preload list.  
+
+*Entrypoints:*  
+- [`jit_and_retrieve()`](chatbot/rag_chatbot_app.py) → Fetch company information from both **preloaded docs** and **freshly ingested ones**.  
+- [`ingest_pipeline.py`](chatbot/ingest_pipeline.py) → Preprocess and ingest SEC filings (**8-K, 10-Q, 10-K**) into the vector store.  
+  The preload list includes core tickers such as:  
+  **AAPL (Apple), MSFT (Microsoft), GOOGL (Alphabet), AMZN (Amazon), NVDA (NVIDIA), META (Meta Platforms), BRK-B (Berkshire Hathaway), TSLA (Tesla), UNH (UnitedHealth), JNJ (Johnson & Johnson)**.  
+
+> **Note:** Companies outside this preload set will be automatically handled through **JIT ingestion**, ensuring coverage for any listed ticker.
+
+---
+
+### Demo RAG 
+
+For stable **finance glossary/theory questions**, such as Sharpe Ratio, Alpha vs. Beta, and Bid-Ask Spread, the chatbot falls back to a dedicated **`demo.md`**. This prevents reliance on LLM randomness for foundational definitions.  
+
+*Entrypoints:*  
+- [`retrieve_demo_docs()`](chatbot/rag_chatbot_app.py)) → retrieves matching demo content.  
+- [`docs/demo.md`](docs/demo.md) → curated glossary of finance theory. 
+
+---
+
+### LLM Fallback
+
+When no tool results, filings, or demo entries apply, the system falls back to pure LLM reasoning. This ensures that **every question** can still be **answered**, even if it is open-ended or abstract(e.g.P/E ratio,ESG risks, and diversification). The fallback is best suited for **conceptual, opinion-like, or educational queries**.  
+
+*Entrypoints:*  
+- [`run_llm_or_claude()`](chatbot/rag_chatbot_app.py) 
+
+---
+### Chat History Gating
+
+To avoid leaking irrelevant context, the chatbot uses a **gating mechanism** that decides whether prior turns should be included.  
+
+It maintains a **sliding window** of recent user messages and first applies **hard rules** — for example, if the ticker changes or the user explicitly starts a new topic, history is skipped. 
+
+When those rules pass, the system applies a **multi-signal scoring** function that considers **semantic similarity**, **entity overlap** (tickers, years, quarters, finance terms), and **recency**. Based on these signals, the chatbot can include no history, selectively include one or two messages, or use the full window of context.  
+
+This ensures that follow-up questions stay coherent, while unrelated queries start fresh.  
+
+*Entrypoints:*  
+- [`chatbot/bot/conversation/chat_history.py`](chatbot/bot/conversation/chat_history.py) → contains the full chat history logic (buffer + gating functions).  
+- [`rag_chatbot_app.py`](chatbot/rag_chatbot_app.py) → calls `should_use_history()` to decide whether to include history, and uses `chat_history.append()` to maintain the buffer.
+
+---
+### Chroma Score Normalization
+
+To ensure reliable retrieval and routing decisions, the chatbot applies a **score normalization layer** on top of Chroma’s raw distance/similarity outputs.
+
+Different distance metrics (Cosine, Euclidean, Inner Product) produce values on different scales — sometimes even negative or unbounded.The system therefore maps all retrieval results to a **unified relevance score in the `[0.0, 1.0]` range**.
+
+After normalization, any score ≤ 0 is filtered out. This ensures that routing thresholds (e.g., deciding whether to use RAG vs. Demo vs. LLM fallback) are stable across metrics and models. This design provides a consistent semantic meaning: **higher scores always mean stronger relevance**. 
+
+*Entrypoints:*
+- [`chatbot/bot/memory/vector_database/distance_metric.py`](chatbot/bot/memory/vector_database/distance_metric.py) → defines normalization functions for Cosine, Euclidean, and Inner Product.
+- [`chatbot/bot/memory/vector_database/chroma.py`](chatbot/bot/memory/vector_database/chroma.py) → applies normalization during retrieval and filters out invalid scores.
+
+---
+
+### Example Questions
+
+> Routing order: **Tools → RAG → Claude (LLM fallback)**
+> The assistant calls Claude **only** when both Tools and RAG return no usable result.
+
+#### ✅ Tool-based (API) — verified with CLI
+
+These questions are directly answered from `financial_fetcher` API calls.
+Run locally to verify:
+
+```bash
+python chatbot/financial_fetcher.py
+```
+
+You should see matching outputs for these examples:
+
+| #   | Example Question                                             | Expected Source               | CLI Example Output                                                                 |
+| --- | ------------------------------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | **AAPL** — *What is the latest stock price of AAPL?*         | Yahoo Finance / Alpha Vantage | `{'ticker': 'AAPL', 'price': 229.35, 'source': ...}`                               |
+| 2   | **TSLA** — *What was Tesla’s GAAP EPS in Q4 2023?*            | SEC EDGAR companyfacts (Fiscal) | `{'ticker': 'TSLA', 'metric': 'eps', 'value': 4.3, ...}`                           |
+| 3-1 | **NVDA** — *Show me revenue for FY2024 Q4 for NVDA.*         | SEC EDGAR companyfacts        | `{'ticker': 'NVDA', 'metric': 'revenue', 'value': 60922000000, 'year': 2024, 'quarter': 4, 'basis': 'FY', ...}` |
+| 3-2 | **NVDA** — *Show me revenue for CY2024 Q4 for NVDA.*         | SEC EDGAR companyfacts        | `{'ticker': 'NVDA', 'metric': 'revenue', 'value': 60922000000, 'year': 2024, 'quarter': 4, 'basis': 'CY', 'note': 'requested calendar year/quarter; backend may map to fiscal periods', ...}` |
+| 4   | **MSFT** — *Latest headlines for MSFT (top 3).*              | NewsAPI                       | Three recent MSFT headlines with URLs                                              |
+
+> **Note:** CY (Calendar Year) queries are supported and recorded in the payload/metadata as `basis="CY"`, along with `calendar_year` and `calendar_quarter` fields.  
+> Currently, CY values are resolved using the same FY data from SEC EDGAR and may represent mapped fiscal periods depending on the company's reporting calendar.
+
+---
+#### 📄 Retrieval-based (RAG) — Preloaded Data
+> **Note:** These are preloaded in `vector_store` (via CLI `ingest_pipeline.py`). They will **not** trigger JIT ingestion because the `.md` files already exist in `docs_index`.
+
+* *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?* → **HYBRID**
+* *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
+* *According to Tesla’s Q2 2025 10-Q, what factors affected automotive gross margin in the quarter? Provide cited sentences.* → **RAG**
+
+---
+#### ⚡ JIT Retrieval-based (RAG) — Just-in-time Tests
+> **Note:** These companies/questions are **not** in `PRELOAD` and have no pre-generated `.md` files. UI testing will trigger live JIT ingestion (SEC EDGAR / IR / slides).
+
+* *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?* → **HYBRID JIT**
+* *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
+* *What initiatives did Adobe highlight as drivers of Digital Media growth for business professionals and consumers in Q2 2025?* → **JIT→RAG**
+---
+##### 🔄 After JIT Ingestion — Sync New Docs
+Run these steps to reset and sync your JIT environment:
+
+```bash
+# 1. Stop the app
+Ctrl + C
+
+# 2. Delete previously saved Markdown files for the target tickers 
+# (simulate a fresh JIT ingestion)
+
+# CRM (Salesforce): 
+rm -f docs/CRM_*.md
+rm -rf docs/CRM
+# Netflix:
+rm -f docs/NFLX_*.md
+rm -rf docs/NFLX
+# Adobe:
+rm -f docs/ADBE_*.md
+rm -rf docs/ADBE
+
+# 3. Set environment variables
+export PURGE_TICKERS="CRM,NFLX,ADBE"
+python chatbot/memory_builder.py --chunk-size 1000 --chunk-overlap 50
+
+# 4. Restart the app
+TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization
+```
+---
+#### 🧪 RAG — Demo Reference (from `demo.md`)
+> These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
+
+* *What is the Sharpe Ratio and how is it calculated?*
+* *What is a "bid-ask spread" in stock trading?*
+* *Can you explain the difference between Alpha and Beta in portfolio theory?*
+---
+
+#### 💬 General (LLM) — concept or theory only
+> **Note:** Pure LLM reasoning; does **not** call APIs or retrieve documents.
+
+* *What does the P/E ratio tell investors about a company?*
+* *How do ESG risks influence a company’s long-term valuation?*
+* *Why is diversification important in portfolio construction?*
+
+---
+#### 🔍 Smoke tests
+> **Note:** Quick sanity checks for verifying correct tool and fallback routing.
+1. *What is the latest stock price of AAPL?* → **Tools**
+2. *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?* → **HYBRID**
+3. *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
+4. *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?* → **HYBRID JIT**
+5. *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
+6. *What is the Sharpe Ratio and how is it calculated?* → **RAG DEMO**
+7. *What does the P/E ratio tell investors about a company?* → **LLM**
 
 ## Prerequisites
 
@@ -229,103 +410,6 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b 
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b-math-reasoning --k 2 --synthesis-strategy async-tree-summarization
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model starling --k 2 --synthesis-strategy async-tree-summarization
 ```
-
-## Example Questions
-
-> Routing order: **Tools → RAG → Claude (LLM fallback)**
-> The assistant calls Claude **only** when both Tools and RAG return no usable result.
-
-### ✅ Tool-based (API) — verified with CLI
-
-These questions are directly answered from `financial_fetcher` API calls.
-Run locally to verify:
-
-```bash
-python chatbot/financial_fetcher.py
-```
-
-You should see matching outputs for these examples:
-
-| #   | Example Question                                             | Expected Source               | CLI Example Output                                                                 |
-| --- | ------------------------------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------- |
-| 1   | **AAPL** — *What is the latest stock price of AAPL?*         | Yahoo Finance / Alpha Vantage | `{'ticker': 'AAPL', 'price': 229.35, 'source': ...}`                               |
-| 2   | **TSLA** — *What was Tesla’s GAAP EPS in Q4 2023?*            | SEC EDGAR companyfacts (Fiscal) | `{'ticker': 'TSLA', 'metric': 'eps', 'value': 4.3, ...}`                           |
-| 3-1 | **NVDA** — *Show me revenue for FY2024 Q4 for NVDA.*         | SEC EDGAR companyfacts        | `{'ticker': 'NVDA', 'metric': 'revenue', 'value': 60922000000, 'year': 2024, 'quarter': 4, 'basis': 'FY', ...}` |
-| 3-2 | **NVDA** — *Show me revenue for CY2024 Q4 for NVDA.*         | SEC EDGAR companyfacts        | `{'ticker': 'NVDA', 'metric': 'revenue', 'value': 60922000000, 'year': 2024, 'quarter': 4, 'basis': 'CY', 'note': 'requested calendar year/quarter; backend may map to fiscal periods', ...}` |
-| 4   | **MSFT** — *Latest headlines for MSFT (top 3).*              | NewsAPI                       | Three recent MSFT headlines with URLs                                              |
-
-> **Note:** CY (Calendar Year) queries are supported and recorded in the payload/metadata as `basis="CY"`, along with `calendar_year` and `calendar_quarter` fields.  
-> Currently, CY values are resolved using the same FY data from SEC EDGAR and may represent mapped fiscal periods depending on the company's reporting calendar.
-
----
-### 📄 Retrieval-based (RAG) — Preloaded Data
-> **Note:** These are preloaded in `vector_store` (via CLI `ingest_pipeline.py`). They will **not** trigger JIT ingestion because the `.md` files already exist in `docs_index`.
-
-* *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?* → **HYBRID**
-* *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
-* *According to Tesla’s Q2 2025 10-Q, what factors affected automotive gross margin in the quarter? Provide cited sentences.* → **RAG**
-
----
-### ⚡ JIT Retrieval-based (RAG) — Just-in-time Tests
-> **Note:** These companies/questions are **not** in `PRELOAD` and have no pre-generated `.md` files. UI testing will trigger live JIT ingestion (SEC EDGAR / IR / slides).
-
-* *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?* → **HYBRID JIT**
-* *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
-* *What initiatives did Adobe highlight as drivers of Digital Media growth for business professionals and consumers in Q2 2025?* → **JIT→RAG**
----
-#### 🔄 After JIT Ingestion — Sync New Docs
-Run these steps to reset and sync your JIT environment:
-
-```bash
-# 1. Stop the app
-Ctrl + C
-
-# 2. Delete previously saved Markdown files for the target tickers 
-# (simulate a fresh JIT ingestion)
-
-# CRM (Salesforce): 
-rm -f docs/CRM_*.md
-rm -rf docs/CRM
-# Netflix:
-rm -f docs/NFLX_*.md
-rm -rf docs/NFLX
-# Adobe:
-rm -f docs/ADBE_*.md
-rm -rf docs/ADBE
-
-# 3. Set environment variables
-export PURGE_TICKERS="CRM,NFLX,ADBE"
-python chatbot/memory_builder.py --chunk-size 1000 --chunk-overlap 50
-
-# 4. Restart the app
-TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b --k 2 --synthesis-strategy async-tree-summarization
-```
----
-### 🧪 RAG — Demo Reference (from `demo.md`)
-> These hit the preloaded `demo.md` (no JIT, no filings). Useful for quick RAG sanity checks.
-
-* *What is the Sharpe Ratio and how is it calculated?*
-* *What is a "bid-ask spread" in stock trading?*
-* *Can you explain the difference between Alpha and Beta in portfolio theory?*
----
-
-### 💬 General (LLM) — concept or theory only
-> **Note:** Pure LLM reasoning; does **not** call APIs or retrieve documents.
-
-* *What does the P/E ratio tell investors about a company?*
-* *How do ESG risks influence a company’s long-term valuation?*
-* *Why is diversification important in portfolio construction?*
-
----
-### 🔍 Smoke tests
-> **Note:** Quick sanity checks for verifying correct tool and fallback routing.
-1. *What is the latest stock price of AAPL?* → **Tools**
-2. *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?* → **HYBRID**
-3. *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
-4. *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?* → **HYBRID JIT**
-5. *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
-6. *What is the Sharpe Ratio and how is it calculated?* → **RAG DEMO**
-7. *What does the P/E ratio tell investors about a company?* → **LLM**
 
 ## How to debug the Streamlit app on Pycharm
 

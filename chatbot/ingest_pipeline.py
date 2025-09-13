@@ -106,7 +106,7 @@ def ingest_ticker(ticker: str, forms: List[str], max_per_ticker: int, since: Opt
             print(f"[error] Failed to fetch {doc_url}: {e}")
             continue
 
-        # --- File naming is strictly from function arg ticker + normalized form ---
+        # File naming is strictly from function arg ticker + normalized form 
         safe_form = re.sub(r"[^A-Z0-9\-]+", "_", form)  # keep only A–Z/0–9/-
         safe_date = re.sub(r"[^0-9\-]", "", fdate)       # YYYY-MM-DD
         out_name  = f"{ticker_up}_{safe_form}_{safe_date}.md"
@@ -178,7 +178,7 @@ def main():
         rag_cli_smoke_test()
         return
 
-    # Original default preload (keep your existing setup below) ---
+    # Original default preload (keep your existing setup below) 
     top_tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
                    "META", "BRK-B", "TSLA", "UNH", "JNJ"]
     forms = ["8-K", "10-Q", "10-K"]      # ensure earnings press + quarterly + annual
