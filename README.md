@@ -7,6 +7,7 @@
 ## Table of contents
 * [Introduction](#introduction)
 * [Project Background and Credit](#project-background-and-credit)
+  * [Key Enhancements](#key-enhancements)
   * [Routing Design (Main Logic)](#routing-design-main-logic)
   * [Design Principles](#design-principles)
 * [Features](#features)
@@ -22,7 +23,7 @@
 * [Bootstrap Environment](#bootstrap-environment)
   * [How to use the make file](#how-to-use-the-make-file)
 * [Using the Open-Source Models Locally](#using-the-open-source-models-locally)
-  * [Supported Models](#supported-models)
+  * [Supported Open-Source Models](#supported-open-source-models)
 * [Supported Response Synthesis strategies](#supported-response-synthesis-strategies)
 * [Build the memory index](#build-the-memory-index)
 * [Run the Chatbot](#run-the-chatbot)
@@ -228,6 +229,8 @@ You should see matching outputs for these examples:
 | 3-2 | **NVDA** — *Show me revenue for CY2024 Q4 for NVDA.*         | SEC EDGAR companyfacts        | `{'ticker': 'NVDA', 'metric': 'revenue', 'value': 60922000000, 'year': 2024, 'quarter': 4, 'basis': 'CY', 'note': 'requested calendar year/quarter; backend may map to fiscal periods', ...}` |
 | 4   | **MSFT** — *Latest headlines for MSFT (top 3).*              | NewsAPI                       | Three recent MSFT headlines with URLs                                              |
 
+![tools_aapl_price](images/tools_aapl_price.png)
+
 > **Note:** CY (Calendar Year) queries are supported and recorded in the payload/metadata as `basis="CY"`, along with `calendar_year` and `calendar_quarter` fields.  
 > Currently, CY values are resolved using the same FY data from SEC EDGAR and may represent mapped fiscal periods depending on the company's reporting calendar.
 
@@ -239,6 +242,8 @@ You should see matching outputs for these examples:
 * *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
 * *According to Tesla’s Q2 2025 10-Q, what factors affected automotive gross margin in the quarter? Provide cited sentences.* → **RAG**
 
+![hybrid_aapl_eps](images/hybrid_aapl_eps.png)
+
 ---
 #### ⚡ JIT Retrieval-based (RAG) — Just-in-time Tests
 > **Note:** These companies/questions are **not** in `PRELOAD` and have no pre-generated `.md` files. UI testing will trigger live JIT ingestion (SEC EDGAR / IR / slides).
@@ -246,6 +251,9 @@ You should see matching outputs for these examples:
 * *What was Salesforce’s operating income in Q1 2025 compared to Q4 2024, and what factors contributed to the change?* → **HYBRID JIT**
 * *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
 * *What initiatives did Adobe highlight as drivers of Digital Media growth for business professionals and consumers in Q2 2025?* → **JIT→RAG**
+
+![jit_netflix_risks](images/jit_netflix_risks.png)
+
 ---
 ##### 🔄 After JIT Ingestion — Sync New Docs
 Run these steps to reset and sync your JIT environment:
@@ -281,6 +289,9 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b
 * *What is the Sharpe Ratio and how is it calculated?*
 * *What is a "bid-ask spread" in stock trading?*
 * *Can you explain the difference between Alpha and Beta in portfolio theory?*
+
+![demo_sharpe_ratio_1](images/demo_sharpe_ratio_1.png)
+![demo_sharpe_ratio_2](images/demo_sharpe_ratio_2.png)
 ---
 
 #### 💬 General (LLM) — concept or theory only
@@ -289,7 +300,7 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b
 * *What does the P/E ratio tell investors about a company?*
 * *How do ESG risks influence a company’s long-term valuation?*
 * *Why is diversification important in portfolio construction?*
-
+![llm_pe_ratio](images/llm_pe_ratio.png)
 ---
 #### 🔍 Smoke tests
 > **Note:** Quick sanity checks for verifying correct tool and fallback routing.
@@ -307,58 +318,77 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b
 * GPU supporting CUDA 12.1+
 * Poetry 1.7.0
 
+---
+
 ### Install Poetry
 
-Install Poetry with the official installer by following
-this [link](https://python-poetry.org/docs/#installing-with-the-official-installer).
+Poetry is used to manage dependencies and environments.
+Follow the [official installation guide](https://python-poetry.org/docs/#installing-with-the-official-installer).
 
-You must use the current adopted version of Poetry
-defined [here](https://github.com/umbertogriffo/rag-chatbot/blob/main/version/poetry).
+The required Poetry version is defined [here](https://github.com/umbertogriffo/rag-chatbot/blob/main/version/poetry).
+If you already have Poetry installed but with a different version, you can upgrade or downgrade using:
 
-If you have poetry already installed and is not the right version, you can downgrade (or upgrade) poetry through:
-
-```
+```bash
 poetry self update <version>
 ```
 
+---
+
 ## Bootstrap Environment
 
-To easily install the dependencies we created a make file.
+We provide a `Makefile` to simplify setup and environment management.
 
 ### How to use the make file
 
-> [!IMPORTANT]
-> Run `Setup` as your init command (or after `Clean`).
+> \[!IMPORTANT]
+> Always run `make setup_cuda` (or `make setup_metal` on macOS) as your initial command after cloning the repo, or after running `make clean`.
 
-* Check: ```make check```
-    * Use it to check that `which pip3` and `which python3` points to the right path.
-* Setup:
-    * Setup with NVIDIA CUDA acceleration: ```make setup_cuda```
-        * Creates an environment and installs all dependencies with NVIDIA CUDA acceleration.
-    * Setup with Metal GPU acceleration: ```make setup_metal```
-        * Creates an environment and installs all dependencies with Metal GPU acceleration for macOS system only.
-* Update: ```make update```
-    * Update an environment and installs all updated dependencies.
-* Tidy up the code: ```make tidy```
-    * Run Ruff check and format.
-* Clean: ```make clean```
-    * Removes the environment and all cached files.
-* Test: ```make test```
-    * Runs all tests.
-    * Using [pytest](https://pypi.org/project/pytest/)
+* **Check**: `make check`
+  Verify that `pip3` and `python3` point to the correct paths.
+
+* **Setup**:
+
+  * With NVIDIA CUDA acceleration:
+
+    ```bash
+    make setup_cuda
+    ```
+
+    Creates a Poetry environment and installs dependencies with GPU acceleration.
+
+  * With Metal GPU acceleration (macOS only):
+
+    ```bash
+    make setup_metal
+    ```
+
+    Creates an environment with Metal GPU support.
+
+* **Update**: `make update`
+  Update dependencies inside the Poetry environment.
+
+* **Tidy**: `make tidy`
+  Run `ruff` to lint and format the code.
+
+* **Clean**: `make clean`
+  Remove the Poetry environment and all cached files.
+
+* **Test**: `make test`
+  Run the test suite with [pytest](https://pypi.org/project/pytest/).
+
+---
 
 ## Using the Open-Source Models Locally
 
-We utilize the open-source library [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), a binding
-for [llama-cpp](https://github.com/ggerganov/llama.cpp),
-allowing us to utilize it within a Python environment.
-`llama-cpp` serves as a C++ backend designed to work efficiently with transformer-based models.
-Running the LLMs architecture on a local PC is impossible due to the large (~7 billion) number of parameters.
-This library enable us to run them either on a `CPU` or `GPU`.
-Additionally, we use the `Quantization and 4-bit precision` to reduce number of bits required to represent the numbers.
-The quantized models are stored in [GGML/GGUF](https://medium.com/@phillipgimmi/what-is-gguf-and-ggml-e364834d241c)
-format.
+This project runs **open-source large language models (LLMs)** locally via [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), a Python binding for [llama.cpp](https://github.com/ggerganov/llama.cpp).
 
+* Models can run on both **CPU** and **GPU**.
+* **Quantization** (4-bit precision) is supported to reduce memory usage.
+* Quantized models are stored in [GGML/GGUF format](https://medium.com/@phillipgimmi/what-is-gguf-and-ggml-e364834d241c).
+
+These models form the backbone of the **Hybrid RAG + Tools + Demo + LLM pipeline** for financial Q\&A.
+
+---
 ## Supported Open-Source Models
 
 | 🤖 Model (`--model`) | Supported | Model Size | Max Context | Notes and Link to Model Card                                                                 |
@@ -371,12 +401,11 @@ format.
 | `qwen-2.5:coder`     | ✅         | 3B         | 128k        | [Qwen2.5-Coder-3B-Instruct](https://huggingface.co/bartowski/Qwen2.5-Coder-3B-Instruct-GGUF) |
 
 ## Supported Response Synthesis strategies
-
-| ✨ Response Synthesis strategy                                           | Supported | Notes |
-|-------------------------------------------------------------------------|-----------|-------|
-| `create-and-refine` Create and Refine                                   | ✅         |       |
-| `tree-summarization` Tree Summarization                                 | ✅         |       |
-| `async-tree-summarization` - **Recommended** - Async Tree Summarization | ✅         |       |
+| ✨ Strategy                                                  | Supported | Notes                                                     |
+| ----------------------------------------------------------- | --------- | --------------------------------------------------------- |
+| `create-and-refine` Sequential synthesis                    | ✅         | Iteratively refines responses across retrieved chunks     |
+| `tree-summarization` Hierarchical synthesis                 | ✅         | Summarizes each chunk, then combines results              |
+| `async-tree-summarization` (recommended) Parallel synthesis | ✅         | Faster version of tree summarization, best for large docs |
 
 ## Build the memory index
 
@@ -412,11 +441,17 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model qwen-2.5:3b-
 TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model starling --k 2 --synthesis-strategy async-tree-summarization
 ```
 
-## How to debug the Streamlit app on Pycharm
+## How to debug the Streamlit app on PyCharm
 
-![debug_streamlit.png](images/debug_streamlit.png)
+![debug\_streamlit.png](images/debug_streamlit.png)
+
 
 ## References
+* Direct API Lookups:
+    * [Alpha Vantage](https://www.alphavantage.co/) — stock prices, FX, technical indicators.  
+    * [Yahoo Finance](https://finance.yahoo.com/) — market data, fundamentals, historical prices.  
+    * [SEC EDGAR](https://www.sec.gov/edgar/search/) — company filings (10-Q, 10-K, 8-K).  
+    * [NewsAPI](https://newsapi.org/) — latest headlines and financial news.
 
 * Large Language Models (LLMs):
     * [LLMs as a repository of vector programs](https://fchollet.substack.com/p/how-i-think-about-llm-prompt-engineering)
