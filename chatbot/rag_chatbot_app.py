@@ -130,38 +130,100 @@ def ensure_company_indexed(ticker: str, cap: int = 3, timeout: int = 10) -> None
                     "Run memory_builder to persist into vector index.")
 
 # Hot-insert markdown docs for a ticker into the vector index.
-def hot_insert_ticker_docs(index, ticker: str,
-    docs_dir: Path = DOCS_DIR, chunk_size: int = 512, chunk_overlap: int = 25) -> int:
-    tkr = (ticker or "").upper()
-    md_files = list(docs_dir.glob(f"{tkr}_*_*.md")) + list((docs_dir / tkr).glob("*.md"))
-    if not md_files:
-        logging.info(f"[JIT] No markdown files for {tkr}")
+def hot_insert_ticker_docs(
+    index,
+    ticker: str,
+    docs_dir: Path = DOCS_DIR,
+    chunk_size: int = 512,
+    chunk_overlap: int = 25,
+) -> int:
+    
+    tkr = (ticker or "").upper().strip()
+    if not tkr:
         return 0
 
+    # Read <T>_*.md (and docs/<T>/*.md)
+    pat1 = f"{tkr}_*_*.md"
+    pat2 = f"{tkr}/*.md"
+    if _TRACE:
+        _LOG.info("[JIT] scan dir=%s patterns=[%r,%r]", str(docs_dir), pat1, pat2)
+
+    md_files = list(docs_dir.glob(pat1)) + list((docs_dir / tkr).glob("*.md"))
+    if not md_files:
+        _LOG.info("[JIT] No markdown files for %s", tkr)
+        return 0
+
+    names = [p.name for p in md_files]
+    if _TRACE:
+        _LOG.info("[JIT] found %d files for %s: %s", len(md_files), tkr, names)
+
+    # Simple HTML/entity cleanup → text
     def _to_text(raw: str) -> str:
         return re.sub(r"\s{2,}", " ", re.sub(r"<[^>]+>|&\w+;", " ", raw)).strip()
 
+    # Load all docs, log file size + preview (logging-safe)
     docs = []
     for p in md_files:
         try:
             txt = _to_text(p.read_text(encoding="utf-8"))
             if txt:
+                sz = p.stat().st_size
+                if _TRACE:
+                    _LOG.info("[JIT] file ok: %s (%s bytes) preview=%r", p.name, f"{sz:,}", txt[:80])
                 docs.append(Document(page_content=txt, metadata={"source": str(p), "ticker": tkr}))
         except Exception as e:
-            logging.warning(f"[JIT] read fail {p}: {e!r}")
-    if not docs: return 0
+            _LOG.warning("[JIT] read fail %s: %r", str(p), e)
 
+    if not docs:
+        _LOG.info("[JIT] No readable text docs for %s", tkr)
+        return 0
+
+    # Chunking
     try:
-        chunks = create_recursive_text_splitter(
+        splitter = create_recursive_text_splitter(
             format=Format.MARKDOWN.value, chunk_size=chunk_size, chunk_overlap=chunk_overlap
-        ).split_documents(docs)
+        )
+        chunks = splitter.split_documents(docs)
+
+        # Ensure ticker/source metadata on each chunk
         for c in chunks:
             c.metadata.update({"ticker": tkr, "source": c.metadata.get("source")})
+
+        # Chunking diagnostics
+        if _TRACE:
+            dist = {}
+            for c in chunks:
+                src = Path((c.metadata or {}).get("source", "")).name
+                dist[src] = dist.get(src, 0) + 1
+            _LOG.info("[JIT] chunk params: chunk_size=%d overlap=%d", chunk_size, chunk_overlap)
+            _LOG.info("[JIT] chunk distribution: %s", dist)
+            if chunks:
+                s = (chunks[0].metadata or {}).get("source", "")
+                _LOG.info(
+                    "[JIT] sample chunk: ticker=%s source=%s len=%d text=%r",
+                    tkr, Path(s).name if s else "(unknown)", len(chunks[0].page_content), chunks[0].page_content[:120]
+                )
+
+        # Insert into index
         index.from_chunks(chunks)
-        logging.info(f"[JIT] Hot-inserted {len(chunks)} chunks for {tkr}")
+        _LOG.info("[JIT] Hot-inserted %d chunks for %s", len(chunks), tkr)
+
+        # Post-insert probe to ensure visibility on the SAME index instance
+        try:
+            probe_docs, _ = index.similarity_search_with_threshold(tkr, k=3, threshold=0.0, exclude_tools=True)
+            if _TRACE:
+                probe_names = [
+                    Path(((getattr(d, "metadata", {}) or {}).get("source")) or "").name for d in (probe_docs or [])
+                ]
+                _LOG.info("[JIT] probe-after-insert: got %d for %s → %s", len(probe_docs or []), tkr, probe_names)
+        except Exception as e:
+            if _TRACE:
+                _LOG.info("[JIT] probe-after-insert failed: %r", e)
+
         return len(chunks)
+
     except Exception as e:
-        logging.warning(f"[JIT] insert failed {tkr}: {e!r}")
+        _LOG.warning("[JIT] insert failed %s: %r", tkr, e)
         return 0
 
 # Step 3: Load the fine-tuned financial LLM client
@@ -404,71 +466,98 @@ def run_tools_fastpath(refined_query: str, want_hybrid: bool, trace_log=None):
 _TRACE = os.environ.get("TRACE_ROUTING") == "1"
 _LOG   = logging.getLogger("ROUTING")
 
-def jit_and_retrieve(index, refined_query: str, tkr: str | None,
-    k: int, parameters=None, used_jit_out: dict | None = None):
-
+# Optionally JIT-ingest new ticker docs, then run similarity search.
+def jit_and_retrieve(
+    index,
+    refined_query: str,
+    tkr: str | None,
+    k: int,
+    parameters=None,
+    used_jit_out: dict | None = None,
+):
     T = (tkr or "").upper().strip()
     if used_jit_out:
         used_jit_out["flag"] = False
 
-    # Helper: get basename like "TSLA_10-Q_2025-06-30.md"
     def _basename(meta: dict) -> str:
         src = (meta or {}).get("source", "") or ""
         return src.split("/")[-1] if src else "(unknown)"
 
-    # Helper: strict filename filter (keep ONLY docs starting with "<T>_")
     def _filter_by_filename(docs, T):
+        # Keep ONLY files named like "<T>_*.md"
         if not T:
             return docs
-        keep = [d for d in (docs or [])
-                if _basename(getattr(d, "metadata", {})).startswith(f"{T}_")]
-        if keep:
-            if _TRACE:
-                names = [_basename(getattr(d, "metadata", {})) for d in keep]
-                _LOG.info(f"[FILTER] kept {len(keep)}/{len(docs)} for {T}: {names}")
-            return keep
-        if _TRACE:
-            _LOG.info(f"[FILTER-FAIL] no docs matched {T}")
-        return []  # do NOT fall back to unrelated docs
+        kept, dropped = [], []
+        for d in (docs or []):
+            name = _basename(getattr(d, "metadata", {}))
+            tk = (getattr(d, "metadata", {}) or {}).get("ticker", "")
+            if name.startswith(f"{T}_"):
+                kept.append((d, name, tk))
+            else:
+                dropped.append((name, tk))
 
-    # JIT ingestion (only for non-PRELOAD tickers) 
-    if T and (T not in PRELOAD) and JIT_ENABLED and not _has_enough_local_docs(T, cap=3):
+        if _TRACE:
+            if kept:
+                _LOG.info("[FILTER] kept %d/%d for %s: %s", len(kept), len(docs or []), T, [n for _, n, _ in kept])
+            if dropped:
+                _LOG.info("[FILTER] dropped (name/ticker): %s", dropped)
+
+        return [d for d, _, _ in kept]
+
+    # JIT ingestion gate 
+    preload = (T in PRELOAD) if T else False
+    has_local = _has_enough_local_docs(T, cap=3) if T else False
+    if _TRACE:
+        _LOG.info("[JIT] gate: T=%s preload=%s has_local=%s enabled=%s", T, preload, has_local, bool(JIT_ENABLED))
+
+    if T and (not preload) and JIT_ENABLED and not has_local:
         try:
             ensure_company_indexed(T, cap=3, timeout=10)
-            # New call style (keyword args only)
             hot_insert_ticker_docs(
-                index, T,
+                index,
+                T,
                 docs_dir=DOCS_DIR,
                 chunk_size=getattr(parameters, "chunk_size", 512),
                 chunk_overlap=getattr(parameters, "chunk_overlap", 25),
             )
-            if used_jit_out:
+            if used_jit_out is not None:
                 used_jit_out["flag"] = True
             if _TRACE:
-                _LOG.info(f"[JIT] ingestion fired for {T}")
+                _LOG.info("[JIT] ingestion fired for %s", T)
         except Exception as e:
-            _LOG.warning(f"[JIT] error: {e!r}")
+            _LOG.warning("[JIT] error: %r", e)
+
+    # Optional persist/flush so new chunks are visible before searching
+    for fn in ("persist", "flush"):
+        if hasattr(index, fn):
+            try:
+                getattr(index, fn)()
+                if _TRACE:
+                    _LOG.info("[RAG] index.%s() done", fn)
+            except Exception as e:
+                if _TRACE:
+                    _LOG.info("[RAG] index.%s() skipped: %r", fn, e)
 
     # Primary retrieval 
     q = f"\"{T}\" {refined_query}" if T else refined_query
     docs, _ = index.similarity_search_with_threshold(q, k=k, threshold=0.05, exclude_tools=True)
     if _TRACE:
         names = [_basename(getattr(d, "metadata", {})) for d in (docs or [])]
-        _LOG.info(f"[RAG] query='{q}' got {len(docs)} docs: {names}")
+        _LOG.info("[RAG] query=%r got %d docs: %s", q, len(docs or []), names)
     docs = _filter_by_filename(docs, T)
 
-    # Fallback retrieval (looser threshold / larger k)
+    # Fallback retrieval (looser)
     if T and not docs:
-        docs, _ = index.similarity_search_with_threshold(q, k=max(k, 5), threshold=0.08, exclude_tools=True)
+        docs, _ = index.similarity_search_with_threshold(q, k=max(k, 8), threshold=0.08, exclude_tools=True)
         if _TRACE:
             names = [_basename(getattr(d, "metadata", {})) for d in (docs or [])]
-            _LOG.info(f"[FALLBACK] query='{q}' got {len(docs)} docs before filter: {names}")
+            _LOG.info("[FALLBACK] query=%r got %d docs before filter: %s", q, len(docs or []), names)
         docs = _filter_by_filename(docs, T)
 
-    # If still empty, return empty sources (type-consistent)
+    # Finalize 
     if T and not docs:
         if _TRACE:
-            _LOG.info(f"[RESULT] No file about {T} found")
+            _LOG.info("[RESULT] No file about %s found → return empty", T)
         return [], []
 
     return docs, rebuild_sources(docs)

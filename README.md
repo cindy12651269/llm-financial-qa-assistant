@@ -252,6 +252,7 @@ You should see matching outputs for these examples:
 * *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
 * *What initiatives did Adobe highlight as drivers of Digital Media growth for business professionals and consumers in Q2 2025?* → **JIT→RAG**
 
+![hybrid_jit_salesforce.png](images/hybrid_jit_salesforce.png)
 ![jit_netflix_risks](images/jit_netflix_risks.png)
 
 ---
