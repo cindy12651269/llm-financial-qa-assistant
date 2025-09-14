@@ -229,7 +229,7 @@ You should see matching outputs for these examples:
 | 3-2 | **NVDA** — *Show me revenue for CY2024 Q4 for NVDA.*         | SEC EDGAR companyfacts        | `{'ticker': 'NVDA', 'metric': 'revenue', 'value': 60922000000, 'year': 2024, 'quarter': 4, 'basis': 'CY', 'note': 'requested calendar year/quarter; backend may map to fiscal periods', ...}` |
 | 4   | **MSFT** — *Latest headlines for MSFT (top 3).*              | NewsAPI                       | Three recent MSFT headlines with URLs                                              |
 
-![tools_aapl_price](images/tools_aapl_price.png)
+<img src="images/tools_aapl_price.png" width="800">
 
 > **Note:** CY (Calendar Year) queries are supported and recorded in the payload/metadata as `basis="CY"`, along with `calendar_year` and `calendar_quarter` fields.  
 > Currently, CY values are resolved using the same FY data from SEC EDGAR and may represent mapped fiscal periods depending on the company's reporting calendar.
@@ -242,7 +242,7 @@ You should see matching outputs for these examples:
 * *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
 * *According to Tesla’s Q2 2025 10-Q, what factors affected automotive gross margin in the quarter? Provide cited sentences.* → **RAG**
 
-![hybrid_aapl_eps](images/hybrid_aapl_eps.png)
+<img src="images/hybrid_aapl_eps.png" width="800">
 
 ---
 #### ⚡ JIT Retrieval-based (RAG) — Just-in-time Tests
@@ -252,8 +252,7 @@ You should see matching outputs for these examples:
 * *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
 * *What initiatives did Adobe highlight as drivers of Digital Media growth for business professionals and consumers in Q2 2025?* → **JIT→RAG**
 
-![hybrid_jit_salesforce.png](images/hybrid_jit_salesforce.png)
-![jit_netflix_risks](images/jit_netflix_risks.png)
+<img src="images/hybrid_jit_salesforce.png" width="800">
 
 ---
 ##### 🔄 After JIT Ingestion — Sync New Docs
@@ -291,8 +290,8 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b
 * *What is a "bid-ask spread" in stock trading?*
 * *Can you explain the difference between Alpha and Beta in portfolio theory?*
 
-![demo_sharpe_ratio_1](images/demo_sharpe_ratio_1.png)
-![demo_sharpe_ratio_2](images/demo_sharpe_ratio_2.png)
+<img src="images/demo_sharpe_ratio_1.png" width="800">
+<img src="images/demo_sharpe_ratio_2.png" width="800">
 ---
 
 #### 💬 General (LLM) — concept or theory only
@@ -301,10 +300,12 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b
 * *What does the P/E ratio tell investors about a company?*
 * *How do ESG risks influence a company’s long-term valuation?*
 * *Why is diversification important in portfolio construction?*
-![llm_pe_ratio](images/llm_pe_ratio.png)
+<img src="images/llm_pe_ratio.png" width="800">
 ---
+
 #### 🔍 Smoke tests
 > **Note:** Quick sanity checks for verifying correct tool and fallback routing.
+
 1. *What is the latest stock price of AAPL?* → **Tools**
 2. *What was Apple’s diluted EPS in calendar Q3 2025, and what changed vs the prior quarter (calendar Q2 2025)?* → **HYBRID**
 3. *What investments will Microsoft continue according to its official filings in 2025?* → **RAG**
@@ -312,6 +313,7 @@ TRACE_ROUTING=1 streamlit run chatbot/rag_chatbot_app.py -- --model llama-3.2:3b
 5. *What risks did Netflix highlight in its Q1 2025?* → **JIT→RAG**
 6. *What is the Sharpe Ratio and how is it calculated?* → **RAG DEMO**
 7. *What does the P/E ratio tell investors about a company?* → **LLM**
+---
 
 ## Prerequisites
 
